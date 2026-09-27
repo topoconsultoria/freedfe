@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freedfe"
+version = "0.1.0"
+description = "Consulta, download de XML e geração de PDF de NF-e, CT-e e MDF-e de interesse de um CNPJ/CPF pelos Web Services oficiais de Distribuição DF-e (SEFAZ)."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+authors = [{ name = "Topo Consultoria" }]
+keywords = ["nfe", "cte", "mdfe", "sefaz", "dfe", "distribuicao", "danfe"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "cryptography>=41",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+pdf = ["brazilfiscalreport[dacte,damdfe]>=1.0"]
+xlsx = ["openpyxl>=3.1"]
+todos = ["freedfe[pdf,xlsx]"]
+dev = ["freedfe[todos]", "pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+Repository = "https://github.com/topoconsultoria/freedfe"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N"]
+ignore = ["N818"]  # exceções seguem a nomenclatura em português (sufixo "Erro")
+
+[tool.ruff.lint.per-file-ignores]
+"tests/fabrica_xml.py" = ["E501"]  # modelos de XML em linhas longas
+
+[tool.ruff.lint.isort]
+known-first-party = ["freedfe"]
+known-local-folder = ["conftest", "fabrica_xml"]

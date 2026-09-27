@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Dados fiscais e certificados nunca vão para o repositório
+freedfe_dados/
+dados_dfe/
+saida/
+*.pfx
+*.p12
+*.pem
