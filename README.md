@@ -209,9 +209,19 @@ armazenados: cancelamento (101101, 105104, 305101) e substituição (105102).
 
 A escolha é automática (`VersaoLeiaute.selecionar`), pela **data de recepção** e não pela
 competência, ou fixa por `ConfiguracaoNfseLocal(leiaute=...)` / `emitir(..., leiaute=...)`.
-Sem o grupo IBS/CBS os dois leiautes geram o mesmo XML. O modelo tipado cobre prestadores de
-serviço em geral; o que não couber (comércio exterior, reembolso de IBS/CBS, dedução por
-documentos) entra pelo XML pronto.
+Mesmo sem IBS/CBS os leiautes **não** geram o mesmo XML (conferido nos XSD oficiais):
+
+| Item | NT 004 v2.0 | NT 009 v1.01 |
+|---|---|---|
+| `finNFSe` (finalidade) | ausente | obrigatório, logo após `tpEmit` |
+| `cServ` | `xDescServ` antes de `cNBS` | `xDescServ` por último |
+| Redução da base | `vDedRed` | `vAjusteBC` (`pAjusteBCISSQN` ou `vAjusteBCISSQN`) |
+| Série (`serie`) | até 99999 | até 89999 (acima é recusada localmente) |
+| Id do pedido de evento | 62 posições (`nPedRegEvento`) | 59 posições |
+| `IBSCBS` | `gIBSCBS` antes de `CST`/`cClassTrib` | `indDest`/`dest` dentro de `IBSCBS`; `CST`/`cClassTrib` antes de `gIBSCBS` |
+
+O modelo tipado cobre prestadores de serviço em geral; o que não couber (comércio exterior,
+reembolso de IBS/CBS, dedução por documentos) entra pelo XML pronto.
 
 ### Validação pelo XSD oficial (opcional)
 
@@ -226,7 +236,9 @@ dfe = FreeDFe(..., config_nfse=ConfiguracaoNfseLocal(
 ```
 
 Os testes de schema rodam com `FREEDFE_XSD_NFSE_NT004=<pasta> pytest` (e `..._NT009` para o
-pacote PRODREST); sem as variáveis ficam ignorados.
+pacote PRODREST); sem as variáveis ficam ignorados. No pacote de produção (NT 004) use a pasta
+`Schemas/1.01`. O XSD publicado traz o padrão de `serie` com `^...$` (inválido em XSD, que ancora
+sozinho); o `ValidadorXsd` remove as âncoras ao carregar, sem alterar os arquivos.
 
 ### Estrutura de dados da NFS-e
 
@@ -248,24 +260,39 @@ pacote PRODREST); sem as variáveis ficam ignorados.
 
 ### Hipóteses e limites conhecidos
 
-A documentação oficial está defasada em relação ao serviço real. Conferido contra o XSD oficial
-v1.01: ordem dos elementos da DPS, NFS-e e pedido de evento, Id do pedido (59 posições) e
-`cMotivo` do cancelamento. **Não confirmado** (teste em produção restrita antes de produção;
-tudo é configurável ou tolerante):
+A documentação oficial está defasada em relação ao serviço real. **Conferido** contra os XSD
+oficiais: DPS (NT 004 e NT 009), NFS-e, evento e pedido de cancelamento assinado, inclusive a
+estrutura de `IBSCBS` da NT 009. **Conferido** nos documentos oficiais: rotas dos manuais da Sefin e
+do ADN, leiaute e QR Code do DANFSe (NT 008 v1.02). **Observado** nos servidores, sem certificado
+(`FREEDFE_TESTE_REDE=1 pytest tests/test_rede_real.py`):
 
-1. XSD da **NT 009 v1.01** (pacote PRODREST): a estrutura do grupo `IBSCBS` e a posição de
-   `indDest`/`dest` na raiz foram inferidas do relatório técnico. Valide com `pasta_xsd`.
-2. Prefixo `/API/` na produção restrita (`ConfiguracaoNfseLocal(prefixo_api="/API")`).
-3. Status de `HEAD /dps/{id}` (200/404), nomes dos campos JSON de resposta (emissão, evento, ADN)
+- A Sefin de **produção** só monta `/SefinNacional`; `/API/SefinNacional` dá 404. Em produção não
+  use `prefixo_api`.
+- A Sefin de **produção restrita** monta `/SefinNacional` e `/API/SefinNacional` (403 sem ICP-Brasil).
+- O IIS da Sefin devolve 403 a quem não tem certificado ICP-Brasil; ADN e parametrização
+  recusam o certificado já no handshake TLS (reset de conexão ou `bad record mac`).
+- A Consulta Pública do QR Code (`/ConsultaPublica/?tpc=1&chave=`) existe nos dois ambientes.
+
+**Ainda não confirmado** (só com o A1; teste em produção restrita antes de produção; tudo é
+configurável ou tolerante):
+
+1. Qual prefixo a produção restrita atende de fato (`ConfiguracaoNfseLocal(prefixo_api="/API")`).
+2. Status de `HEAD /dps/{id}` (200/404), nomes dos campos JSON de resposta (emissão, evento, ADN)
    e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as duas).
-4. URL do QR Code e leiaute exato do DANFSe v2.0 (anexo da NT 008): `url_consulta_publica` é
-   configurável e o DANFSe segue o conteúdo do XML.
-5. Algoritmo do dígito verificador da chave de 50 posições (validação só estrutural).
-6. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
+3. Formato da resposta de convênio e dos demais parâmetros municipais (tratada como dicionário
+   tolerante a nomes).
+4. Algoritmo do dígito verificador da chave de 50 posições (validação só estrutural).
+5. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
    biblioteca devolve o código de rejeição.
-7. Não há contingência offline documentada: em indisponibilidade, reenvie depois (a competência
+6. Não há contingência offline documentada: em indisponibilidade, reenvie depois (a competência
    permite emissão tardia; confirme as regras com o município).
-8. Só certificado A1. O certificado da conexão deve ser do emitente (E0718).
+7. Só certificado A1. O certificado da conexão deve ser do emitente (E0718).
+
+**DANFSe.** Segue a NT 008 v1.02 (DANFSe v2.0): blocos e rótulos do Anexo I, traço nos campos
+vazios, blocos suprimidos só com a mensagem oficial, QR Code de 25 mm com a legenda oficial e
+"NFS-e SEM VALIDADE JURÍDICA" fora de produção. Diferenças assumidas: fonte Helvetica (não Arial),
+logomarca textual, posições calculadas pelo fluxo da página e sem canhoto. Nomes de município só
+existem no XML para o emitente; para tomador, destinatário e intermediário aparece o código IBGE.
 
 `examples/nfse_smoke_producao_restrita.py` valida mTLS, rota, convênio e o perfil de assinatura
 (Exclusive C14N + RSA-SHA256) na produção restrita **sem gerar nota**.
@@ -330,6 +357,9 @@ homologação antes de usar em produção.
   deixe as conclusivas para o fluxo de recebimento.
 - Se o TLS do servidor não validar, informe `ca_bundle` com a cadeia ICP-Brasil. Nunca desabilite
   a verificação.
+- **Proxy.** Por padrão os transportes usam `HTTPS_PROXY`/`NO_PROXY` do ambiente (túnel `CONNECT`
+  `http://`). `FreeDFe(..., proxy="http://usuario:senha@host:3128")` força um, `proxy=None` nunca usa.
+  O mTLS segue fim a fim; proxy que intercepta TLS impede o certificado cliente de chegar à Fazenda.
 - Os XMLs contêm dados pessoais (LGPD): restrinja o acesso à pasta de dados.
 
 ## Desenvolvimento
@@ -340,6 +370,16 @@ pytest
 ruff check src tests
 ```
 
-Os testes não acessam a rede: usam transporte falso, certificado autoassinado gerado na hora e
-XMLs sintéticos. Com os XSD oficiais da NFS-e em disco, `FREEDFE_XSD_NFSE_NT004=<pasta> pytest`
-valida a DPS, a NFS-e, o evento e o pedido de cancelamento contra o schema.
+Por padrão os testes não acessam a rede externa. Há três camadas:
+
+- **Unitários:** transporte falso, certificado autoassinado gerado na hora e XMLs sintéticos.
+- **Integração local** (`tests/test_integracao_http.py`): servidor HTTPS com mTLS e proxy `CONNECT`
+  em `127.0.0.1` que imitam Sefin, ADN e parametrização, conferem a assinatura XMLDSig recebida e
+  exercitam handshake, timeout, E0014, reconciliação sem segundo POST, cancelamento, sincronização
+  e DANFSe em sockets reais.
+- **Rede real, opt-in** (`FREEDFE_TESTE_REDE=1 pytest tests/test_rede_real.py`): comportamento dos
+  servidores da NFS-e sem certificado (prefixos, 403, recusa no handshake, Consulta Pública).
+
+Com os XSD oficiais da NFS-e em disco, `FREEDFE_XSD_NFSE_NT004=<pasta>` e
+`FREEDFE_XSD_NFSE_NT009=<pasta>` validam a DPS, a NFS-e, o evento e o pedido de cancelamento
+contra o schema (inclusive a DPS que o servidor local recebe na emissão).

@@ -143,7 +143,14 @@ class ConfiguracaoNfse:
     As rotas mudam sem versionamento (parâmetros e DANFSe migraram para o host ADN), por
     isso tudo fica centralizado aqui e pode ser substituído com :meth:`com`.
 
-    HIPÓTESES a confirmar (smoke test na produção restrita):
+    Observado em 29/10/2026 sem certificado (``tests/test_rede_real.py``, opt-in):
+        - Sefin de **produção** só monta ``/SefinNacional`` (403 sem ICP-Brasil); o caminho
+          ``/API/SefinNacional`` devolve 404. Em produção use ``prefixo_api=""``.
+        - Sefin de **produção restrita** monta ``/SefinNacional`` e ``/API/SefinNacional`` (ambos
+          403 sem ICP-Brasil). Sem o A1 não dá para saber se atendem as mesmas rotas.
+        - ADN e parametrização recusam certificado cliente não ICP-Brasil já no handshake TLS.
+
+    HIPÓTESES a confirmar (smoke test na produção restrita, com o A1):
         - ``prefixo_api``: a página oficial indica ``/API/SefinNacional`` na produção restrita,
           mas relatos de desenvolvedores apontam ``/SefinNacional``. Padrão: sem prefixo.
         - ``modelo_url_consulta_publica``: a NT 008 v1.02 (item 2.4.3) fixa

@@ -38,6 +38,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["rede: acessa os servidores reais da NFS-e (opt-in: FREEDFE_TESTE_REDE=1)"]
 
 [tool.ruff]
 line-length = 100

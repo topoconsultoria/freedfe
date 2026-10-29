@@ -1,10 +1,13 @@
 # Status da implementação (v0.2.0)
 
 Etapas 0 a 12 **implementadas** na branch `claude/plano-nfse-nacional`, um commit por etapa,
-com `pytest` e `ruff` verdes (449 testes; 12 de schema ficam ignorados sem os XSD oficiais).
+com `pytest` e `ruff` verdes. Depois delas, uma rodada de verificação contra os artefatos oficiais
+(pacote XSD de produção e pacote PRODREST da NT 009, NT 008, manuais) e contra os servidores reais
+sem certificado. Resultado dos testes: 496 passam e 25 ficam ignorados por padrão; com os dois
+pacotes XSD são 511; com `FREEDFE_TESTE_REDE=1` também, 521 (os 10 de rede real).
 O restante deste documento é o plano aprovado, mantido como foi escrito. Os desvios abaixo
-vieram de conferir o plano contra o **XSD oficial v1.01** (NT 004 v2.0), os exemplos oficiais
-e o relatório técnico.
+vieram de conferir o plano contra os **XSD oficiais** (NT 004 v2.0 e NT 009 v1.01), os exemplos
+oficiais, a NT 008 e o relatório técnico.
 
 ## Desvios em relação ao plano
 
@@ -21,21 +24,30 @@ e o relatório técnico.
 | `GeradorPdf.gerar(situacao=)` | passado a todos | passado **só para NFS-e** | Não quebra geradores personalizados já existentes |
 | Numeração automática | só `proximo_numero` | **recusada** com emissão `ENVIADA`/`INCERTA` na série | Reenviar sem número fixo geraria uma segunda nota |
 | Retries | 3 tentativas | 1 + 3 repetições (2, 4 e 8 s), configuráveis | Leitura literal de "backoff 2/4/8 s" |
+| Diferenças NT 004 × NT 009 | só IBS/CBS | também `finNFSe` na raiz, ordem de `cServ`, `vAjusteBC` no lugar de `vDedRed` e série até 89999 | XSD oficial do PRODREST (validado) |
+| URL do QR Code | `.../ConsultaPublica/?chave=` (hipótese) | `.../ConsultaPublica/?tpc=1&chave=` | NT 008 v1.02, item 2.4.3 |
+| Leiaute do DANFSe | conteúdo do XML, campos a conferir | blocos, rótulos e regras do Anexo I da NT 008 | NT 008 v1.02 |
+| Proxy | não previsto | `proxy="auto"` (HTTPS_PROXY/NO_PROXY) ou URL; túnel CONNECT | Necessário em redes corporativas e neste ambiente |
+| Testes de rede | só transporte falso | servidor mTLS local, proxy CONNECT e testes opt-in nos servidores reais | Cobrir handshake, timeout e fluxo completo em sockets |
 
 Adições além do plano: `ConfiguracaoNfseLocal.pausa`, `esperas_consulta`, `bloqueio_adn_segundos`,
 `RepositorioDocumentos.obter_atual`, `ClienteParametros(rota_legada=True)` e
 `ServicoNfse.gerar_dps_assinada`.
 
-## O que ficou como hipótese (verificar na produção restrita)
+## O que ficou como hipótese (só com o certificado A1)
 
-1. XSD da **NT 009 v1.01** (pacote PRODREST) **não estava acessível**: a estrutura do `IBSCBS`
-   e a posição de `indDest`/`dest` na raiz foram inferidas do relatório. Sem IBS/CBS os dois
-   leiautes geram o mesmo XML, e isso foi verificado contra o XSD v1.01.
-2. Prefixo `/API/`, status de `HEAD /dps/{id}`, nomes dos campos JSON de resposta, de evento e do
-   ADN, semântica do NSU do ADN, URL do QR Code e leiaute exato do DANFSe v2.0.
-3. Dígito verificador da chave de 50 posições (validação estrutural apenas).
+Resolvido na rodada de verificação: estrutura da DPS da NT 009 (validada contra o XSD oficial),
+QR Code e leiaute do DANFSe (NT 008) e rotas dos manuais. Observado sem certificado: produção só
+monta `/SefinNacional`; produção restrita monta `/SefinNacional` e `/API/SefinNacional`; ADN e
+parametrização recusam certificado não ICP-Brasil no handshake.
 
-O script `examples/nfse_smoke_producao_restrita.py` cobre os itens de rota e assinatura.
+1. Qual prefixo a produção restrita atende de fato e se os dois respondem as mesmas rotas.
+2. Status de `HEAD /dps/{id}`, nomes dos campos JSON de resposta, de evento e do ADN, e
+   semântica do NSU do ADN.
+3. Formato da resposta de convênio e dos demais parâmetros municipais.
+4. Dígito verificador da chave de 50 posições (validação estrutural apenas).
+
+O script `examples/nfse_smoke_producao_restrita.py` cobre rota, convênio e assinatura com o A1.
 
 ---
 

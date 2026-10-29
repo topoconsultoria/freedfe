@@ -115,6 +115,10 @@ def descrever_falha(host: str, operacao: str, erro: Exception, proxy: str | None
     elif isinstance(erro, ssl.SSLError):
         mensagem += (". O handshake TLS foi recusado: servidores da NFS-e Nacional exigem "
                      "certificado cliente ICP-Brasil válido (A1 e dentro da validade)")
+    elif isinstance(erro, ConnectionResetError):
+        mensagem += (". O servidor encerrou a conexão: com mTLS isso costuma indicar certificado "
+                     "cliente não aceito (ICP-Brasil) ou bloqueio de rede/proxy; se persistir "
+                     "só em alguns acessos, é limitação momentânea do servidor")
     elif via is not None and "Tunnel connection failed" in str(erro):
         mensagem += f". O proxy {via} recusou o túnel CONNECT: o host precisa estar liberado nele"
     return mensagem

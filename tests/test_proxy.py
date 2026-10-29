@@ -74,6 +74,8 @@ def test_mensagens_de_falha_orientam_sem_vazar_segredos():
     assert "ca_bundle" in descrever_falha(DESTINO, "GET", verificacao, None)
     handshake = ssl.SSLError("TLSV1_ALERT_UNKNOWN_CA")
     assert "certificado cliente ICP-Brasil" in descrever_falha(DESTINO, "POST", handshake, None)
+    assert "encerrou a conexão" in descrever_falha(
+        DESTINO, "GET", ConnectionResetError(104, "Connection reset by peer"), None)
     tunel = OSError("Tunnel connection failed: 403 Forbidden")
     mensagem = descrever_falha(DESTINO, "GET", tunel, "http://u:segredo@proxy.local:3128")
     assert "proxy.local:3128" in mensagem and "segredo" not in mensagem
