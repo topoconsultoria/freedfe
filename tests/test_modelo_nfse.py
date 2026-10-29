@@ -293,6 +293,19 @@ class TestDps:
         with pytest.raises(ValidacaoErro, match="data"):
             dps_minima(data_competencia=dt.datetime(2026, 10, 29, 1, 0))
 
+    def test_emitente_define_o_documento_do_id(self):
+        assert dps_minima().documento_emitente == CNPJ_PRESTADOR
+        tomador = tomador_pj()
+        dps = dps_minima(tipo_emitente=TipoEmitente.TOMADOR, tomador=tomador)
+        assert dps.documento_emitente == CNPJ_TOMADOR
+        with pytest.raises(ValidacaoErro, match="tomador"):
+            dps_minima(tipo_emitente=TipoEmitente.TOMADOR)
+        with pytest.raises(ValidacaoErro, match="intermediário"):
+            dps_minima(tipo_emitente=TipoEmitente.INTERMEDIARIO)
+        with pytest.raises(ValidacaoErro, match="CNPJ ou CPF"):
+            dps_minima(tipo_emitente=TipoEmitente.TOMADOR,
+                       tomador=Tomador(nif="ABC123", nome="Exterior"))
+
     @pytest.mark.parametrize("campos", [{"serie": 0}, {"serie": 100000}, {"numero": 0},
                                         {"numero": "x"}, {"codigo_municipio_emissor": "123"},
                                         {"tipo_emitente": 4}])

@@ -665,9 +665,10 @@ class IbsCbs:
     NFS-e. A NBS do serviço é obrigatória quando este grupo existe (E0322). Reembolso/repasse
     (``gReeRepRes``) e imóvel só pelo caminho "XML pronto".
 
-    HIPÓTESE (NT 009 v1.01): ``indicador_gibscbs``, ``ajuste_base_calculo`` e
-    ``versao_calculo`` só têm efeito no leiaute da NT 009 e sua posição no XML foi inferida do
-    relatório técnico, sem o XSD do pacote ``PRODREST``. Valide com ``pasta_xsd`` antes de enviar.
+    HIPÓTESE (NT 009 v1.01): ``ajuste_base_calculo`` (``vAjusteBC``) só existe no leiaute da
+    NT 009 e sua posição no XML foi inferida do relatório técnico, sem o XSD do pacote
+    ``PRODREST``. Valide com ``pasta_xsd`` antes de enviar. O ``ind_gIBSCBS`` do relatório é
+    uma coluna da tabela de CST (indica se o detalhamento é exigido), não um elemento do XML.
     """
 
     codigo_indicador_operacao: str
@@ -682,9 +683,7 @@ class IbsCbs:
     codigo_credito_presumido: str | None = None
     tributacao_regular: TributacaoRegularIbsCbs | None = None
     diferimento: DiferimentoIbsCbs | None = None
-    indicador_gibscbs: str | None = None
     ajuste_base_calculo: Decimal | None = None
-    versao_calculo: str | None = None
     finalidade: str = field(default="0", init=False)
 
     def __post_init__(self) -> None:
@@ -706,9 +705,7 @@ class IbsCbs:
                                              obrigatorio=True),
                notas_referenciadas=tuple(exigir_chave_nfse(c) for c in self.notas_referenciadas),
                codigo_credito_presumido=_digitos(self.codigo_credito_presumido, "cCredPres", 2),
-               ajuste_base_calculo=_decimal(self.ajuste_base_calculo, "vAjusteBC"),
-               indicador_gibscbs=_texto(self.indicador_gibscbs, "ind_gIBSCBS", 5),
-               versao_calculo=_texto(self.versao_calculo, "verCalcIBSCBS", 20))
+               ajuste_base_calculo=_decimal(self.ajuste_base_calculo, "vAjusteBC"))
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +780,12 @@ class Dps:
                                 "(E0128).")
         if self.ibs_cbs is not None and not self.servico.codigo_nbs:
             raise ValidacaoErro("A NBS do serviço é obrigatória quando há IBS/CBS (E0322).")
+        if emitente is TipoEmitente.TOMADOR and self.tomador is None:
+            raise ValidacaoErro("Emitente tomador exige o grupo do tomador.")
+        if emitente is TipoEmitente.INTERMEDIARIO and self.intermediario is None:
+            raise ValidacaoErro("Emitente intermediário exige o grupo do intermediário.")
+        if self.documento_emitente is None:
+            raise ValidacaoErro("O emitente da DPS deve ter CNPJ ou CPF (compõe o Id da DPS).")
         _fixar(self,
                serie=normalizar_serie(self.serie),
                numero=normalizar_numero_dps(self.numero) if self.numero is not None else None,
@@ -791,3 +794,13 @@ class Dps:
                tipo_emitente=emitente)
         if self.data_emissao is not None and self.data_competencia > self.data_emissao.date():
             raise ValidacaoErro("A competência não pode ser posterior à data de emissão.")
+
+    @property
+    def documento_emitente(self) -> str | None:
+        """CNPJ/CPF de quem emite a DPS (prestador, tomador ou intermediário, por ``tpEmit``).
+
+        Compõe o Id da DPS e deve coincidir com o titular do certificado (E0718).
+        """
+        emitente = {TipoEmitente.PRESTADOR: self.prestador, TipoEmitente.TOMADOR: self.tomador,
+                    TipoEmitente.INTERMEDIARIO: self.intermediario}[self.tipo_emitente]
+        return emitente.documento if emitente is not None else None

@@ -8,15 +8,29 @@ from decimal import Decimal
 
 from freedfe.nfse.envelope import comprimir_b64
 from freedfe.nfse.modelo import (
+    BeneficioMunicipal,
+    Destinatario,
+    DiferimentoIbsCbs,
     Dps,
     Endereco,
+    ExigibilidadeSuspensa,
+    IbsCbs,
+    Intermediario,
+    Obra,
     OpcaoSimplesNacional,
+    PisCofins,
     Prestador,
     RegimeApuracaoSimples,
+    RegimeEspecialTributacao,
+    RetencaoIssqn,
     Servico,
+    Substituicao,
+    TipoSuspensao,
     Tomador,
     TotTrib,
+    TribFederal,
     TribMunicipal,
+    TributacaoRegularIbsCbs,
     Valores,
 )
 from freedfe.tipos import FUSO_BRASILIA
@@ -100,5 +114,70 @@ def dps_minima(**alteracoes) -> Dps:
                         codigo_municipio_prestacao=MUNICIPIO),
         valores=Valores(Decimal("1000.00")),
         trib_municipal=TribMunicipal(), tot_trib=TotTrib.simples("6.00"))
+    dados.update(alteracoes)
+    return Dps(**dados)
+
+
+def servico_com_nbs(**alteracoes) -> Servico:
+    dados = dict(codigo_tributacao_nacional="010101",
+                 descricao="Desenvolvimento de sistema sob encomenda",
+                 codigo_municipio_prestacao=MUNICIPIO, codigo_nbs="115022000")
+    dados.update(alteracoes)
+    return Servico(**dados)
+
+
+def ibs_cbs_minimo(**alteracoes) -> IbsCbs:
+    dados = dict(codigo_indicador_operacao="100301", indicador_destinatario=0, cst="000",
+                 codigo_classificacao="000001")
+    dados.update(alteracoes)
+    return IbsCbs(**dados)
+
+
+def ibs_cbs_completo() -> IbsCbs:
+    return IbsCbs(
+        codigo_indicador_operacao="100301", indicador_destinatario=1, cst="000",
+        codigo_classificacao="000001", indicador_consumidor_final=1, tipo_operacao=1,
+        ente_governamental=1, notas_referenciadas=(gerar_chave_nfse(numero=5),),
+        destinatario=Destinatario(cnpj=CNPJ_TOMADOR, nome="DESTINATARIO LTDA",
+                                  endereco=endereco_tomador(), telefone="7133334444",
+                                  email="dest@exemplo.com.br"),
+        codigo_credito_presumido="01",
+        tributacao_regular=TributacaoRegularIbsCbs("000", "000001"),
+        diferimento=DiferimentoIbsCbs("10.00", "20.00", "30.00"),
+        ajuste_base_calculo="12.34")
+
+
+def dps_completa(**alteracoes) -> Dps:
+    """DPS com todos os grupos opcionais suportados (emitente prestador, sem endereço)."""
+    dados = dict(
+        serie=7, numero=1234, data_competencia=dt.date(2026, 10, 28), data_emissao=DATA_EMISSAO,
+        codigo_municipio_emissor=MUNICIPIO,
+        prestador=Prestador(cnpj=CNPJ_PRESTADOR, inscricao_municipal="152422",
+                            opcao_simples=OpcaoSimplesNacional.NAO_OPTANTE,
+                            regime_especial=RegimeEspecialTributacao.SOCIEDADE_DE_PROFISSIONAIS,
+                            telefone="7133334444", email="fiscal@prestador.com.br"),
+        tomador=tomador_pj(inscricao_municipal="9988", endereco=endereco_tomador(),
+                           telefone="7199998888", email="tomador@exemplo.com.br"),
+        intermediario=Intermediario(cpf=CPF_TOMADOR, nome="Intermediario Pessoa Fisica"),
+        servico=servico_com_nbs(
+            codigo_tributacao_nacional="070201", descricao="Obra de engenharia\nSegunda linha",
+            codigo_municipio_prestacao=MUNICIPIO_TOMADOR, codigo_tributacao_municipal="001",
+            codigo_interno="ABC123",
+            obra=Obra(codigo_obra="OB-1", inscricao_imobiliaria="IMOB123"),
+            informacoes_complementares="Contrato 123/2026", pedido="PED-9",
+            documento_referencia="DOC-1", documento_tecnico="DRT-1"),
+        valores=Valores("1500.50", recebido="1500.50", desconto_incondicionado="10.00",
+                        desconto_condicionado="5.00", deducao_valor="100.00"),
+        trib_municipal=TribMunicipal(
+            retencao=RetencaoIssqn.RETIDO_PELO_TOMADOR, aliquota="2.50",
+            suspensao=ExigibilidadeSuspensa(TipoSuspensao.DECISAO_JUDICIAL, "1" * 30),
+            beneficio=BeneficioMunicipal("1" * 14, reducao_percentual="10.00")),
+        trib_federal=TribFederal(
+            PisCofins("01", base_calculo="1400.50", aliquota_pis="0.65", aliquota_cofins="3.00",
+                      valor_pis="9.10", valor_cofins="42.02", tipo_retencao=0),
+            retencao_cp="0.00", retencao_irrf="21.00", retencao_csll="14.00"),
+        tot_trib=TotTrib.percentuais("13.45", "0.00", "2.50"),
+        substituicao=Substituicao(gerar_chave_nfse(numero=3), "01"),
+        ibs_cbs=ibs_cbs_completo())
     dados.update(alteracoes)
     return Dps(**dados)
