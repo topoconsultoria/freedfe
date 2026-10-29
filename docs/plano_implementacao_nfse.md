@@ -1,3 +1,44 @@
+# Status da implementação (v0.2.0)
+
+Etapas 0 a 12 **implementadas** na branch `claude/plano-nfse-nacional`, um commit por etapa,
+com `pytest` e `ruff` verdes (449 testes; 12 de schema ficam ignorados sem os XSD oficiais).
+O restante deste documento é o plano aprovado, mantido como foi escrito. Os desvios abaixo
+vieram de conferir o plano contra o **XSD oficial v1.01** (NT 004 v2.0), os exemplos oficiais
+e o relatório técnico.
+
+## Desvios em relação ao plano
+
+| Tema | Plano | Implementado | Motivo |
+|---|---|---|---|
+| Id do pedido de evento | 62 posições na NT 004 e 59 na NT 009 | **59** nos dois leiautes | O XSD 1.01 (`PRE[0-9]{56}`) recusa 62; o relatório confirma |
+| Escolha do leiaute | por `dCompet` | pela **data de recepção** (hoje, Brasília) | A Sefin valida o schema em vigor no recebimento, não na competência |
+| `ind_gIBSCBS`, `verCalcIBSCBS` | campos da DPS | **removidos** | O primeiro é coluna da tabela de CST; o segundo pertence à resposta |
+| Grupo `gIBSCBS` da DPS | base, alíquotas e valores informados | CST, `cClassTrib`, `cCredPres`, `gTribRegular`, `gDif` | O XSD v1.01 mostra que os valores são calculados pela Sefin |
+| `prest/regTrib` | opcional no modelo | **obrigatório** (`opSimpNac`, `regEspTrib`) | Exigido pelo XSD |
+| `Id` da DPS | emitente = prestador | documento do **emitente** (`tpEmit`) | O Id usa a inscrição de quem emite |
+| `ErroNfse` | em `nfse/resposta.py` | em `excecoes.py` (reexportado) | Evita import circular |
+| Clientes REST | cada um com sua chamada | base comum `nfse/cliente_base.py` | Mesma política de repetição e auditoria |
+| `GeradorPdf.gerar(situacao=)` | passado a todos | passado **só para NFS-e** | Não quebra geradores personalizados já existentes |
+| Numeração automática | só `proximo_numero` | **recusada** com emissão `ENVIADA`/`INCERTA` na série | Reenviar sem número fixo geraria uma segunda nota |
+| Retries | 3 tentativas | 1 + 3 repetições (2, 4 e 8 s), configuráveis | Leitura literal de "backoff 2/4/8 s" |
+
+Adições além do plano: `ConfiguracaoNfseLocal.pausa`, `esperas_consulta`, `bloqueio_adn_segundos`,
+`RepositorioDocumentos.obter_atual`, `ClienteParametros(rota_legada=True)` e
+`ServicoNfse.gerar_dps_assinada`.
+
+## O que ficou como hipótese (verificar na produção restrita)
+
+1. XSD da **NT 009 v1.01** (pacote PRODREST) **não estava acessível**: a estrutura do `IBSCBS`
+   e a posição de `indDest`/`dest` na raiz foram inferidas do relatório. Sem IBS/CBS os dois
+   leiautes geram o mesmo XML, e isso foi verificado contra o XSD v1.01.
+2. Prefixo `/API/`, status de `HEAD /dps/{id}`, nomes dos campos JSON de resposta, de evento e do
+   ADN, semântica do NSU do ADN, URL do QR Code e leiaute exato do DANFSe v2.0.
+3. Dígito verificador da chave de 50 posições (validação estrutural apenas).
+
+O script `examples/nfse_smoke_producao_restrita.py` cobre os itens de rota e assinatura.
+
+---
+
 # Plano de implementação: NFS-e Nacional (Sefin/ADN) na biblioteca `freedfe`
 
 ## Contexto

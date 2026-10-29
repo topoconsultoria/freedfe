@@ -435,3 +435,15 @@ def test_reemissao_com_consulta_indisponivel_nao_reenvia(dfe, rest):
     with pytest.raises(EmissaoIncertaErro, match="consulta à Sefin falhou"):
         dfe.nfse.emitir(dps)
     assert len(rest.chamadas("POST")) == 1
+
+
+def test_dhemi_maliciosa_nao_sai_da_pasta_de_dados(dfe, rest, relogio, tmp_path):
+    """O mês da pasta vem do XML (que pode ser de terceiros) e é validado."""
+    xml = dps_xml_nao_assinada(relogio).replace(
+        b"<dhEmi>2026-10-29T10:00:00-03:00</dhEmi>", b"<dhEmi>../../../x</dhEmi>")
+    rest.respostas = [RespostaHttp(500, b""), head(404)]
+    with pytest.raises(EmissaoIncertaErro):
+        dfe.nfse.emitir(xml)
+    base = tmp_path / "homologacao" / CNPJ_PRESTADOR / "nfse" / "dps"
+    assert [p.name for p in base.iterdir()] == ["sem-data"]
+    assert not (tmp_path.parent / "x").exists()

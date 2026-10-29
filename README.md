@@ -2,7 +2,9 @@
 
 Biblioteca Python open source (Apache-2.0) para consultar, baixar o XML e gerar o PDF dos
 documentos fiscais eletrônicos (NF-e, CT-e e MDF-e) de interesse de um CNPJ ou CPF, usando os
-Web Services oficiais de **Distribuição DF-e** da SEFAZ / Ambiente Nacional.
+Web Services oficiais de **Distribuição DF-e** da SEFAZ / Ambiente Nacional, e para **emitir,
+consultar e cancelar NFS-e** na API da NFS-e Nacional (Sefin Nacional e ADN), com geração do
+**DANFSe em PDF com QR Code** (ver [NFS-e Nacional](#nfs-e-nacional-emissão-consulta-e-danfse)).
 
 - Consulta por período, modelo e direção (emitidos/recebidos), com retorno em lista de objetos,
   CSV, JSON, XML ou XLSX.
@@ -10,6 +12,8 @@ Web Services oficiais de **Distribuição DF-e** da SEFAZ / Ambiente Nacional.
 - Geração de DANFE, DACTE e DAMDFE em PDF.
 - Manifestação do Destinatário (Ciência, Confirmação, Desconhecimento, Operação não Realizada).
 - Controle de NSU e de consumo indevido (rejeição 656/678) conforme as Notas Técnicas.
+- NFS-e Nacional: emissão idempotente (DPS tipada ou XML pronto), consulta, cancelamento,
+  parâmetros municipais, sincronização pelo ADN e DANFSe local com QR Code.
 
 ## Leia antes de usar: limites do serviço oficial
 
@@ -35,7 +39,8 @@ Somente certificado **A1** (.pfx/.p12). A3 (token/cartão) exigiria PKCS#11 e n�
 pip install "freedfe[todos] @ git+https://github.com/topoconsultoria/freedfe"
 ```
 
-Extras: `pdf` (BrazilFiscalReport, LGPL-3.0), `xlsx` (openpyxl, MIT), `todos`, `dev`.
+Extras: `pdf` (BrazilFiscalReport, LGPL-3.0), `xlsx` (openpyxl, MIT), `nfse` (reportlab,
+BSD, para o DANFSe), `todos`, `dev`.
 Dependências obrigatórias: `cryptography` e `lxml`. Python 3.9+.
 
 ## Uso
@@ -113,6 +118,158 @@ tipo_xml, nsu, caminho_xml`.
 | `info_certificado()` | Titular, CNPJ/CPF e validade do certificado. |
 | `manifestar_confirmacao / _desconhecimento / _nao_realizada` | Manifestações conclusivas. |
 
+## NFS-e Nacional: emissão, consulta e DANFSe
+
+A NFS-e Nacional usa outro contrato: **REST/JSON síncrono** com mTLS (certificado A1, sem token).
+A DPS (Declaração de Prestação de Serviços) é um XML assinado, comprimido em GZip e Base64; o
+mesmo `POST` devolve a NFS-e ou a rejeição. Tudo fica em `dfe.nfse`.
+
+```python
+import datetime as dt
+import os
+from decimal import Decimal
+
+from freedfe import (Ambiente, Dps, EmissaoIncertaErro, FreeDFe, OpcaoSimplesNacional, Prestador,
+                     RegimeApuracaoSimples, RejeicaoNfseErro, Servico, Tomador, TotTrib,
+                     TribMunicipal, Valores)
+
+dfe = FreeDFe("/seguro/cliente.pfx", os.environ["SEFAZ_PFX_SENHA"], cnpj="11222333000181",
+              ambiente=Ambiente.HOMOLOGACAO, pasta="./dados_dfe")   # homologação = produção restrita
+
+dps = Dps(
+    serie=900,                                   # série exclusiva do ERP; o nDPS é numerado aqui
+    data_competencia=dt.date(2026, 10, 29),
+    codigo_municipio_emissor="2927408",          # IBGE (7 dígitos)
+    prestador=Prestador(
+        cnpj="11222333000181", inscricao_municipal="152422",
+        opcao_simples=OpcaoSimplesNacional.ME_EPP,
+        regime_apuracao_simples=RegimeApuracaoSimples.FEDERAIS_E_MUNICIPAL_PELO_SIMPLES),
+    tomador=Tomador(cnpj="11444777000161", nome="EMPRESA TOMADORA LTDA"),
+    servico=Servico("010101", "Desenvolvimento de sistema sob encomenda",
+                    codigo_municipio_prestacao="2927408"),
+    valores=Valores(Decimal("1000.00")),
+    trib_municipal=TribMunicipal(),              # tributável, ISSQN não retido
+    tot_trib=TotTrib.simples("6.00"),            # um único ramo do xs:choice (regra do regime: Sefin)
+)
+try:
+    nota = dfe.nfse.emitir(dps)                  # assina, envia e grava a NFS-e no repositório
+    pdf = dfe.nfse.gerar_danfse(nota.chave)      # DANFSe com QR Code (extra nfse)
+except RejeicaoNfseErro as erro:                 # rejeição de negócio: corrija e emita de novo
+    print(erro.codigos, [e.complemento for e in erro.erros])
+except EmissaoIncertaErro as erro:               # timeout/5xx: NÃO reenvie à mão
+    dfe.nfse.reconciliar(erro.id_dps)            # consulta HEAD/GET /dps/{id} na Sefin
+```
+
+### Idempotência e máquina de estados
+
+O `POST /nfse` **nunca é repetido** automaticamente. Antes de enviar, a DPS assinada é gravada e
+marcada `ENVIADA`; diante de timeout, 5xx ou resposta ilegível a biblioteca consulta a Sefin pelo
+Id da DPS e só então decide:
+
+```
+PENDENTE ──> ENVIADA ──201──────────────> AUTORIZADA
+                 ├──4xx com erros───────> REJEITADA   (corrija; reemitir reabre a DPS)
+                 └──timeout / 5xx ──────> INCERTA ──HEAD/GET /dps──> AUTORIZADA
+```
+
+- `E0014` (DPS já gerou NFS-e) é tratado como "já emitida": reconcilia e devolve a nota.
+- Emitir de novo uma DPS `AUTORIZADA` devolve a nota gravada, sem chamar a Sefin.
+- Com emissão incerta pendente na série, a **numeração automática é recusada** (geraria uma
+  segunda nota): chame `reconciliar_pendentes()` ou informe o número explicitamente.
+- Um envio por vez por emitente (trava de arquivo), para preservar a numeração.
+- A auditoria (`_estado/chamadas.jsonl`) guarda status, códigos de erro e Ids, **nunca XML**.
+
+### Métodos de `dfe.nfse`
+
+| Método | Descrição |
+|---|---|
+| `emitir(dps, leiaute=None, verificar_parametros=False)` | `Dps` tipado ou XML pronto (`bytes`; não reassina se já houver `Signature`). |
+| `gerar_dps_assinada(dps)` | DPS assinada para conferência, sem enviar nem reservar número. |
+| `reconciliar(id_dps)` / `reconciliar_pendentes()` | Resolve emissões `ENVIADA`/`INCERTA` na Sefin. |
+| `emissoes(situacao=None)` | Estado local das emissões. |
+| `consultar_chave(chave)` | `GET /nfse/{chave}` e grava no repositório. |
+| `cancelar(chave, motivo, justificativa)` | Evento 101101, assinado, com situação local atualizada. |
+| `listar_eventos(chave)` | Eventos na Sefin, gravados no repositório. |
+| `sincronizar(max_lotes=200, cnpj_consulta=None)` | ADN por NSU: notas tomadas e eventos fora do ERP. |
+| `convenio(cod_mun)`, `parametros_servico(...)`, `parametros_contribuinte(...)` | Parâmetros municipais com cache de 24 h. |
+| `verificar_pre_emissao(dps)` | Bloqueia município sem convênio (E0037). |
+| `gerar_danfse(chave, destino=None)` | PDF com QR Code e marca d'água de cancelada/substituída. |
+
+`dfe.consultar(FiltroConsulta(modelos=["nfse"]))`, `baixar_xmls`, `gerar_pdfs`, `importar_xmls`
+e `sincronizar(["nfse"])` também funcionam para NFS-e. A situação das notas considera os eventos
+armazenados: cancelamento (101101, 105104, 305101) e substituição (105102).
+
+### Leiautes e datas
+
+| Ambiente | Leiaute da DPS |
+|---|---|
+| Produção restrita (`Ambiente.HOMOLOGACAO`) | NT 009 v1.01, desde 20/10/2026 |
+| Produção até 30/11/2026 | NT 004 v2.0 (XSD 1.01) |
+| Produção a partir de 01/12/2026 | NT 009 v1.01 |
+
+A escolha é automática (`VersaoLeiaute.selecionar`), pela **data de recepção** e não pela
+competência, ou fixa por `ConfiguracaoNfseLocal(leiaute=...)` / `emitir(..., leiaute=...)`.
+Sem o grupo IBS/CBS os dois leiautes geram o mesmo XML. O modelo tipado cobre prestadores de
+serviço em geral; o que não couber (comércio exterior, reembolso de IBS/CBS, dedução por
+documentos) entra pelo XML pronto.
+
+### Validação pelo XSD oficial (opcional)
+
+Os XSD não acompanham a biblioteca. Baixe o pacote do leiaute no portal da NFS-e Nacional e
+aponte a pasta; a DPS é validada **antes** de assinar e enviar:
+
+```python
+from freedfe import ConfiguracaoNfseLocal, VersaoLeiaute
+
+dfe = FreeDFe(..., config_nfse=ConfiguracaoNfseLocal(
+    pasta_xsd={VersaoLeiaute.NT004_V2: "/xsd/NFSe-ESQUEMAS_XSD-v1.01-20260209"}))
+```
+
+Os testes de schema rodam com `FREEDFE_XSD_NFSE_NT004=<pasta> pytest` (e `..._NT009` para o
+pacote PRODREST); sem as variáveis ficam ignorados.
+
+### Estrutura de dados da NFS-e
+
+```
+<pasta>/<ambiente>/<cnpj_cpf>/
+├── _estado/
+│   ├── emissoes_nfse.json     # estado por Id da DPS (situação, chave, erros, tentativas)
+│   ├── emissao_nfse.lock      # um envio concorrente por emitente
+│   ├── nsu_nfse.json          # sequência do ADN (nsu_nfse_<cnpj>.json para outro CNPJ)
+│   └── parametros_nfse/<codMun>/convenio.json
+└── nfse/
+    ├── indice.json
+    ├── 2026-10/<chave>-NFSe.xml                  # NFS-e (documento fiscal), exatamente como recebida
+    ├── eventos/2026-10/<chave>-<tipo>-EVT....xml
+    ├── eventos_enviados/2026-10/<chave>-101101-pedido.xml / -resposta.json
+    ├── dps/2026-10/<idDPS>-dps.xml / -resposta.json   # evidência por tentativa (-dps-2.xml...)
+    └── danfse/<chave>.pdf
+```
+
+### Hipóteses e limites conhecidos
+
+A documentação oficial está defasada em relação ao serviço real. Conferido contra o XSD oficial
+v1.01: ordem dos elementos da DPS, NFS-e e pedido de evento, Id do pedido (59 posições) e
+`cMotivo` do cancelamento. **Não confirmado** (teste em produção restrita antes de produção;
+tudo é configurável ou tolerante):
+
+1. XSD da **NT 009 v1.01** (pacote PRODREST): a estrutura do grupo `IBSCBS` e a posição de
+   `indDest`/`dest` na raiz foram inferidas do relatório técnico. Valide com `pasta_xsd`.
+2. Prefixo `/API/` na produção restrita (`ConfiguracaoNfseLocal(prefixo_api="/API")`).
+3. Status de `HEAD /dps/{id}` (200/404), nomes dos campos JSON de resposta (emissão, evento, ADN)
+   e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as duas).
+4. URL do QR Code e leiaute exato do DANFSe v2.0 (anexo da NT 008): `url_consulta_publica` é
+   configurável e o DANFSe segue o conteúdo do XML.
+5. Algoritmo do dígito verificador da chave de 50 posições (validação só estrutural).
+6. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
+   biblioteca devolve o código de rejeição.
+7. Não há contingência offline documentada: em indisponibilidade, reenvie depois (a competência
+   permite emissão tardia; confirme as regras com o município).
+8. Só certificado A1. O certificado da conexão deve ser do emitente (E0718).
+
+`examples/nfse_smoke_producao_restrita.py` valida mTLS, rota, convênio e o perfil de assinatura
+(Exclusive C14N + RSA-SHA256) na produção restrita **sem gerar nota**.
+
 ## Estrutura de dados local
 
 ```
@@ -139,10 +296,13 @@ O XML é gravado exatamente como recebido. Um resumo nunca substitui um XML comp
 | `fachada.FreeDFe` | API pública; monta as dependências |
 | `distribuicao` | Mensagens `distDFeInt`, interpretação do retorno, estado de NSU, trava, cliente |
 | `manifestacao` | Evento, assinatura XMLDSig, envio ao Ambiente Nacional |
+| `assinatura` | XMLDSig por perfil: `PERFIL_NFE` (C14N 1.0, RSA-SHA1) e `PERFIL_NFSE` (Exclusive C14N, RSA-SHA256) |
+| `transporte` | `ClienteSoap` (distribuição) e `ClienteRest` (NFS-e), ambos mTLS TLS 1.2+ |
+| `nfse` | Modelo da DPS, montadores por leiaute, clientes Sefin/ADN/parâmetros, estado de emissão, eventos, `ServicoNfse` |
 | `documentos` | Leitura dos XMLs e extração dos dados (NF-e, CT-e, MDF-e, resumos, eventos) |
 | `repositorio` | `RepositorioDocumentos` (contrato), `RepositorioArquivos`, filtro, importador |
 | `exportacao` | Exportadores CSV/JSON/XML/XLSX e fábrica por formato |
-| `pdf` | `GeradorPdf` (contrato) e implementação com BrazilFiscalReport |
+| `pdf` | `GeradorPdf` (contrato), BrazilFiscalReport (DANFE/DACTE/DAMDFE) e `GeradorDanfse` (reportlab) |
 | `servicos` | Endpoints, namespaces e versões dos leiautes (ponto único de atualização) |
 
 `Transporte`, `RepositorioDocumentos` e `GeradorPdf` são classes abstratas: dá para plugar outro
@@ -155,6 +315,8 @@ transporte, um repositório em PostgreSQL ou outro gerador de PDF sem alterar o 
 - CT-e: NT 2015.002 v1.05 (`PL_CTeDistDFe_100`)
 - MDF-e: NT 2015.002 v1.03 (`PL_MDFeDistDFe_100`)
 - CNPJ alfanumérico: NT Conjunta 2025.001 (aceito na validação e nas chaves)
+- NFS-e Nacional: NT 004 v2.0 (XSD 1.01), NT 007 (PIS/COFINS), NT 008 v1.02 (DANFSe v2.0),
+  NT 009 v1.01 (IBS/CBS), Manual Contribuintes - Emissor Público API v1.2 e Manual ADN v1.0
 
 **Hipótese não validada:** a NT do CT-e não traz exemplo de envelope. O namespace usado
 (`.../cte/wsdl/CTeDistribuicaoDFe`) segue a analogia com a NF-e. Confirme no `?wsdl` em
@@ -179,4 +341,5 @@ ruff check src tests
 ```
 
 Os testes não acessam a rede: usam transporte falso, certificado autoassinado gerado na hora e
-XMLs sintéticos.
+XMLs sintéticos. Com os XSD oficiais da NFS-e em disco, `FREEDFE_XSD_NFSE_NT004=<pasta> pytest`
+valida a DPS, a NFS-e, o evento e o pedido de cancelamento contra o schema.

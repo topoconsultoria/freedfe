@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "freedfe"
-version = "0.1.0"
-description = "Consulta, download de XML e geração de PDF de NF-e, CT-e e MDF-e de interesse de um CNPJ/CPF pelos Web Services oficiais de Distribuição DF-e (SEFAZ)."
+version = "0.2.0"
+description = "Distribuição DF-e (NF-e, CT-e, MDF-e) por CNPJ/CPF e NFS-e Nacional: emissão, consulta, cancelamento e DANFSe em PDF com QR Code."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 authors = [{ name = "Topo Consultoria" }]
-keywords = ["nfe", "cte", "mdfe", "sefaz", "dfe", "distribuicao", "danfe"]
+keywords = ["nfe", "cte", "mdfe", "sefaz", "dfe", "distribuicao", "danfe", "nfse", "danfse", "sefin"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",

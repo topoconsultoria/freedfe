@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
@@ -471,8 +472,8 @@ class ServicoNfse:
             xml = etree.tostring(raiz, encoding="utf-8")
         return _DpsPreparada(
             id_dps=identificador, serie=int(identificador[25:30]), numero=int(identificador[30:45]),
-            xml=xml, mes=(inf.findtext(f"{_NS}dhEmi") or "")[:7] or "sem-data",
-            municipio=identificador[3:10], competencia=self._competencia(inf))
+            xml=xml, mes=self._mes(inf), municipio=identificador[3:10],
+            competencia=self._competencia(inf))
 
     def _montar(self, dps: Dps, leiaute: VersaoLeiaute, estado: EstadoEmissao) -> etree._Element:
         if dps.numero is None:
@@ -516,6 +517,15 @@ class ServicoNfse:
             raise ValidacaoErro(f"O Id da DPS ({identificador}) difere da composição dos campos "
                                 f"({esperado}); a Sefin rejeitaria com E0004.")
         return raiz
+
+    @staticmethod
+    def _mes(inf: etree._Element) -> str:
+        """``AAAA-MM`` da emissão para nomear a pasta; qualquer outro texto vira ``sem-data``.
+
+        O XML pode vir de fora: o texto nunca entra no caminho sem passar por esta validação.
+        """
+        mes = (inf.findtext(f"{_NS}dhEmi") or "")[:7]
+        return mes if re.fullmatch(r"\d{4}-\d{2}", mes) else "sem-data"
 
     @staticmethod
     def _competencia(inf: etree._Element) -> dt.date | None:
