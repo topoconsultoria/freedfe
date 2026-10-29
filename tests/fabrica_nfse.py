@@ -285,3 +285,26 @@ def evento_nfse_xml(chave: str, tipo: str = "101101", sequencia: int = 1,
         _filho(evento, "xMotivo", "Cancelamento solicitado pelo prestador")
     _assinatura_ficticia(raiz)
     return etree.tostring(raiz, encoding="utf-8")
+
+
+def resposta_evento(chave: str, tipo: str = "101101", status: int = 201,
+                    com_xml: bool = True) -> RespostaHttp:
+    """Resposta do ``POST /nfse/{chave}/eventos`` (com ou sem o XML do evento registrado)."""
+    corpo = {"tipoAmbiente": 2, "versaoAplicativo": "SefinNacional_1.6.0",
+             "dataHoraProcessamento": "2026-10-29T11:00:05-03:00"}
+    if com_xml:
+        corpo["eventoXmlGZipB64"] = comprimir_b64(evento_nfse_xml(chave, tipo))
+    return RespostaHttp(status, json.dumps(corpo).encode(), {"content-type": "application/json"})
+
+
+def resposta_lista_eventos(xmls: list[bytes], base64_duplo: bool = True) -> RespostaHttp:
+    """Resposta de ``GET /nfse/{chave}/eventos``: ``arquivoXml`` com Base64 duplo (observado)."""
+    import base64
+    itens = []
+    for xml in xmls:
+        conteudo = comprimir_b64(xml)
+        if base64_duplo:
+            conteudo = base64.b64encode(conteudo.encode()).decode()
+        itens.append({"arquivoXml": conteudo, "tipoEvento": 101101})
+    return RespostaHttp(200, json.dumps({"eventos": itens}).encode(),
+                        {"content-type": "application/json"})

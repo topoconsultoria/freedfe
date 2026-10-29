@@ -17,6 +17,7 @@ from typing import Any
 from lxml import etree
 
 from freedfe.excecoes import (
+    ComunicacaoErro,
     EmissaoIncertaErro,
     ErroNfse,
     RejeicaoNfseErro,
@@ -34,6 +35,8 @@ __all__ = [
     "extrair_erros",
     "interpretar_consulta_nfse",
     "interpretar_emissao",
+    "interpretar_evento",
+    "interpretar_lista_eventos",
     "ler_chave_do_xml",
     "ler_json",
 ]
@@ -183,3 +186,51 @@ def _levantar_rejeicao(resposta: RespostaHttp, id_dps: str | None) -> None:
         erros = [ErroNfse(codigo=f"HTTP{resposta.status}",
                           descricao=resposta.corpo[:300].decode("utf-8", "replace").strip())]
     raise RejeicaoNfseErro(erros, status_http=resposta.status, id_dps=id_dps)
+
+
+def interpretar_evento(resposta: RespostaHttp, chave_nfse: str,
+                       tipo_evento: str) -> RetornoEventoNfse:
+    """Resultado do ``POST /nfse/{chave}/eventos``.
+
+    HIPÓTESE: o XML do evento registrado vem em ``eventoXmlGZipB64`` (ou campo equivalente);
+    se a Sefin não o devolver, ``xml_evento`` fica ``None`` e o chamador consulta a lista.
+
+    Raises:
+        RejeicaoNfseErro: rejeição de negócio (ex.: E0824, E0840).
+        ComunicacaoErro: 5xx/408/429; o evento pode ou não ter sido registrado.
+    """
+    if resposta.status in STATUS_INCERTOS:
+        raise ComunicacaoErro(f"A Sefin respondeu HTTP {resposta.status} ao registrar o evento.")
+    if not 200 <= resposta.status < 300:
+        _levantar_rejeicao(resposta, None)
+    dados = ler_json(resposta)
+    texto_xml = campo(dados, "eventoXmlGZipB64", "eventoXml", "xmlGZipB64", "arquivoXml")
+    ambiente = campo(dados, "tipoAmbiente", "tpAmb")
+    return RetornoEventoNfse(
+        chave_nfse=chave_nfse, tipo_evento=tipo_evento,
+        xml_evento=descomprimir_b64(texto_xml) if texto_xml else None,
+        status_http=resposta.status, alertas=extrair_erros(dados, "alertas", "alerta"),
+        tipo_ambiente=int(ambiente) if str(ambiente).isdigit() else None,
+        versao_aplicativo=campo(dados, "versaoAplicativo"),
+        data_processamento=campo(dados, "dataHoraProcessamento", "dataProcessamento"))
+
+
+def interpretar_lista_eventos(resposta: RespostaHttp) -> list[bytes]:
+    """XML dos eventos devolvidos por ``GET /nfse/{chave}/eventos[/...]``.
+
+    O campo ``arquivoXml`` já foi observado com Base64 duplo; a decodificação é tolerante.
+    404 significa "sem eventos". Aceita a lista em ``eventos`` ou um único evento no topo.
+    """
+    if resposta.status == 404:
+        return []
+    if not 200 <= resposta.status < 300:
+        _levantar_rejeicao(resposta, None)
+    dados = ler_json(resposta)
+    itens = campo(dados, "eventos", "evento")
+    itens = itens if isinstance(itens, list) else ([itens] if itens else [dados])
+    xmls = []
+    for item in itens:
+        texto_xml = campo(item, "arquivoXml", "eventoXmlGZipB64", "eventoXml", "xml")
+        if texto_xml:
+            xmls.append(descomprimir_b64(texto_xml))
+    return xmls

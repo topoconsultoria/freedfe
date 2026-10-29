@@ -27,6 +27,7 @@ from freedfe.certificado import CertificadoA1
 from freedfe.distribuicao.estado import Relogio, relogio_utc
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.distribuicao.trava import TravaArquivo
+from freedfe.documentos.resumo import EventoDocumento, evento_cancela, evento_substitui
 from freedfe.excecoes import (
     ComunicacaoErro,
     EmissaoIncertaErro,
@@ -42,14 +43,18 @@ from freedfe.nfse.estado_emissao import (
     RegistroEmissao,
     SituacaoEmissao,
 )
+from freedfe.nfse.eventos import MontadorPedidoEvento, MotivoCancelamento, TipoEventoNfse
 from freedfe.nfse.identificadores import id_dps as montar_id_dps
 from freedfe.nfse.leiaute import NAMESPACE_NFSE, VersaoLeiaute
 from freedfe.nfse.modelo import Dps
 from freedfe.nfse.montador_dps import FOLGA_EMISSAO_SEGUNDOS, montador_para
 from freedfe.nfse.resposta import (
     RetornoEmissao,
+    RetornoEventoNfse,
     interpretar_consulta_nfse,
     interpretar_emissao,
+    interpretar_evento,
+    interpretar_lista_eventos,
     ler_chave_do_xml,
 )
 from freedfe.nfse.validador_xsd import ValidadorXsd
@@ -57,7 +62,7 @@ from freedfe.repositorio.base import RepositorioDocumentos
 from freedfe.servicos import ConfiguracaoNfse, configuracao_nfse
 from freedfe.tipos import FUSO_BRASILIA, Ambiente, ModeloDocumento
 from freedfe.transporte import TransporteRest
-from freedfe.validadores import exigir_id_dps
+from freedfe.validadores import exigir_chave_nfse, exigir_id_dps
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +211,111 @@ class ServicoNfse:
         if armazenar:
             self._repositorio.armazenar([DocumentoRecebido(xml=retorno.xml_nfse)])
         return retorno
+
+    # ------------------------------------------------------------------
+    # Eventos: cancelamento
+    # ------------------------------------------------------------------
+
+    def cancelar(self, chave: str, codigo_motivo: MotivoCancelamento | int,
+                 justificativa: str) -> RetornoEventoNfse:
+        """Registra o cancelamento (evento 101101) e atualiza a situação local.
+
+        Args:
+            chave: chave de acesso da NFS-e (50 posições).
+            codigo_motivo: 1 erro na emissão, 2 serviço não prestado, 9 outros.
+            justificativa: 15 a 255 caracteres.
+
+        Raises:
+            ValidacaoErro: a nota já consta como cancelada/substituída localmente (E0840).
+            RejeicaoNfseErro: regra da Sefin ou do município (prazo, E0824, E0840...).
+            ComunicacaoErro: timeout/5xx sem confirmação; use ``listar_eventos`` antes de
+                tentar de novo.
+        """
+        chave = exigir_chave_nfse(chave)
+        certificado = self._obter_certificado()
+        self._exigir_nao_encerrada(chave)
+        montador = MontadorPedidoEvento(
+            self._ambiente, self._interessado, self._leiaute(None), self._relogio,
+            self._opcoes.folga_emissao_segundos)
+        raiz = montador.cancelamento(chave, codigo_motivo, justificativa)
+        AssinadorXml(certificado, PERFIL_NFSE).assinar(raiz)
+        pedido = etree.tostring(raiz, encoding="utf-8")
+        tipo = TipoEventoNfse.CANCELAMENTO.value
+        with self._trava():
+            self._gravar_evento_enviado(chave, tipo, "pedido.xml", pedido)
+            try:
+                resposta = self._cliente().registrar_evento(chave, pedido)
+                self._gravar_evento_enviado(chave, tipo, "resposta.json", resposta.corpo)
+                retorno = interpretar_evento(resposta, chave, tipo)
+            except ComunicacaoErro as erro:
+                return self._cancelamento_incerto(chave, tipo, erro)
+            except RejeicaoNfseErro as rejeicao:
+                self._auditoria.registrar(servico="nfse", operacao="cancelar", chave=chave,
+                                          situacao="rejeitado", codigos=rejeicao.codigos)
+                if "E0840" in rejeicao.codigos:
+                    self._sincronizar_eventos_se_possivel(chave)  # nota já cancelada na Sefin
+                raise
+            return self._concluir_cancelamento(chave, retorno)
+
+    def listar_eventos(self, chave: str) -> list[EventoDocumento]:
+        """Consulta os eventos da NFS-e na Sefin, armazena os que faltam e devolve todos."""
+        chave = exigir_chave_nfse(chave)
+        xmls = interpretar_lista_eventos(self._cliente().eventos(chave))
+        if xmls:
+            resultado = self._repositorio.armazenar([DocumentoRecebido(xml=x) for x in xmls])
+            if resultado.nao_reconhecidos:
+                logger.warning("%s evento(s) da NFS-e %s em leiaute não reconhecido foram "
+                               "preservados sem interpretação.", resultado.nao_reconhecidos, chave)
+        return self._repositorio.eventos(ModeloDocumento.NFSE, chave)
+
+    def _exigir_nao_encerrada(self, chave: str) -> None:
+        eventos = self._repositorio.eventos(ModeloDocumento.NFSE, chave)
+        if any(evento_cancela(e) for e in eventos):
+            raise ValidacaoErro(f"A NFS-e {chave} já consta como cancelada (E0840).")
+        if any(evento_substitui(e) for e in eventos):
+            raise ValidacaoErro(f"A NFS-e {chave} já foi substituída (E0840).")
+
+    def _concluir_cancelamento(self, chave: str, retorno: RetornoEventoNfse) -> RetornoEventoNfse:
+        if retorno.xml_evento is not None:
+            self._repositorio.armazenar([DocumentoRecebido(xml=retorno.xml_evento)])
+        if not any(evento_cancela(e)
+                   for e in self._repositorio.eventos(ModeloDocumento.NFSE, chave)):
+            self._sincronizar_eventos_se_possivel(chave)  # a resposta não trouxe o evento
+        self._auditoria.registrar(servico="nfse", operacao="cancelar", chave=chave,
+                                  situacao="cancelado")
+        return retorno
+
+    def _cancelamento_incerto(self, chave: str, tipo: str, erro: ComunicacaoErro):
+        """Falha após o envio: confere se o evento foi registrado antes de desistir."""
+        self._sincronizar_eventos_se_possivel(chave)
+        if any(evento_cancela(e) for e in self._repositorio.eventos(ModeloDocumento.NFSE, chave)):
+            self._auditoria.registrar(servico="nfse", operacao="cancelar", chave=chave,
+                                      situacao="cancelado")
+            return RetornoEventoNfse(chave_nfse=chave, tipo_evento=tipo, xml_evento=None,
+                                     status_http=200)
+        self._auditoria.registrar(servico="nfse", operacao="cancelar", chave=chave,
+                                  situacao="incerto")
+        raise ComunicacaoErro(
+            f"{erro} Não foi possível confirmar o cancelamento da NFS-e {chave}: consulte "
+            "listar_eventos() antes de tentar de novo.") from erro
+
+    def _sincronizar_eventos_se_possivel(self, chave: str) -> None:
+        try:
+            self.listar_eventos(chave)
+        except (ComunicacaoErro, RespostaInvalidaErro, RejeicaoNfseErro) as erro:
+            logger.warning("Eventos da NFS-e %s não sincronizados: %s", chave, erro)
+
+    def _gravar_evento_enviado(self, chave: str, tipo: str, sufixo: str, conteudo: bytes) -> None:
+        """Evidência do pedido enviado e da resposta bruta (``nfse/eventos_enviados``)."""
+        mes = self._relogio().astimezone(FUSO_BRASILIA).strftime("%Y-%m")
+        pasta = self._pasta / "nfse" / "eventos_enviados" / mes
+        pasta.mkdir(parents=True, exist_ok=True)
+        base, extensao = sufixo.rsplit(".", 1)
+        destino, indice = pasta / f"{chave}-{tipo}-{base}.{extensao}", 1
+        while destino.exists():
+            indice += 1
+            destino = pasta / f"{chave}-{tipo}-{base}-{indice}.{extensao}"
+        destino.write_bytes(conteudo)
 
     # ------------------------------------------------------------------
     # Preparação da DPS
