@@ -20,6 +20,7 @@ from freedfe.exportacao.formato import FormatoSaida
 from freedfe.interessado import Interessado
 from freedfe.manifestacao.assinatura import AssinadorXml
 from freedfe.manifestacao.cliente import ClienteManifestacao, RetornoManifestacao
+from freedfe.nfse.servico import ConfiguracaoNfseLocal, ServicoNfse
 from freedfe.pdf.gerador import GeradorPdf, GeradorPdfBrazilFiscalReport
 from freedfe.repositorio.arquivos import RepositorioArquivos
 from freedfe.repositorio.base import RepositorioDocumentos, ResultadoArmazenamento
@@ -27,7 +28,7 @@ from freedfe.repositorio.filtro import Direcao, FiltroConsulta
 from freedfe.repositorio.importador import ImportadorXml
 from freedfe.servicos import SERVICOS_DISTRIBUICAO, configuracao_distribuicao
 from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
-from freedfe.transporte import ClienteSoap, Transporte
+from freedfe.transporte import ClienteRest, ClienteSoap, Transporte, TransporteRest
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,10 @@ class FreeDFe:
         pasta: pasta raiz dos dados; os arquivos ficam em ``<pasta>/<ambiente>/<cnpj_cpf>/``.
         ca_bundle: cadeia ICP-Brasil em PEM, se o TLS do servidor não validar.
         transporte, repositorio, gerador_pdf, relogio: dependências substituíveis.
+        transporte_rest: transporte REST da NFS-e Nacional (padrão: mTLS com o certificado).
+        config_nfse: opções da NFS-e (leiaute, XSD, prefixo da rota, URL do QR Code).
+
+    A NFS-e Nacional (emissão, consulta, cancelamento e DANFSe) fica em :attr:`nfse`.
     """
 
     def __init__(self, certificado: CertificadoA1 | str | Path | None = None,
@@ -72,13 +77,17 @@ class FreeDFe:
                  transporte: Transporte | None = None,
                  repositorio: RepositorioDocumentos | None = None,
                  gerador_pdf: GeradorPdf | None = None, relogio: Relogio = relogio_utc,
-                 pausa_entre_lotes: float = 1.0):
+                 pausa_entre_lotes: float = 1.0, transporte_rest: TransporteRest | None = None,
+                 config_nfse: ConfiguracaoNfseLocal | None = None):
         self.interessado = Interessado(cnpj=cnpj, cpf=cpf, uf=uf)
         self.ambiente = Ambiente(ambiente)
         self.pasta = Path(pasta) / self.ambiente.nome_pasta / self.interessado.documento
         self._certificado = self._carregar_certificado(certificado, senha)
         self._ca_bundle = ca_bundle
         self._transporte = transporte
+        self._transporte_rest = transporte_rest
+        self._config_nfse = config_nfse
+        self._servico_nfse: ServicoNfse | None = None
         self.repositorio = repositorio or RepositorioArquivos(
             self.pasta, self.interessado.documento)
         self._gerador_pdf = gerador_pdf or GeradorPdfBrazilFiscalReport()
@@ -224,6 +233,22 @@ class FreeDFe:
         return self._cliente_manifestacao().nao_realizada(chaves, justificativa)
 
     # ------------------------------------------------------------------
+    # NFS-e Nacional
+    # ------------------------------------------------------------------
+
+    @property
+    def nfse(self) -> ServicoNfse:
+        """Emissão, consulta e reconciliação da NFS-e Nacional (Sefin e ADN)."""
+        if self._servico_nfse is None:
+            self._servico_nfse = ServicoNfse(
+                ambiente=self.ambiente, interessado=self.interessado, pasta=self.pasta,
+                repositorio=self.repositorio, auditoria=self._auditoria,
+                obter_certificado=self._exigir_certificado,
+                obter_transporte=self._obter_transporte_rest, relogio=self._relogio,
+                opcoes=self._config_nfse)
+        return self._servico_nfse
+
+    # ------------------------------------------------------------------
     # Certificado
     # ------------------------------------------------------------------
 
@@ -252,6 +277,11 @@ class FreeDFe:
         if self._transporte is None:
             self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle)
         return self._transporte
+
+    def _obter_transporte_rest(self) -> TransporteRest:
+        if self._transporte_rest is None:
+            self._transporte_rest = ClienteRest(self._exigir_certificado(), self._ca_bundle)
+        return self._transporte_rest
 
     def _arquivo_estado(self, modelo: ModeloDocumento) -> Path:
         return self.pasta / "_estado" / f"nsu_{modelo.value}.json"

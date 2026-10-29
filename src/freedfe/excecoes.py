@@ -80,10 +80,18 @@ class EmissaoIncertaErro(ComunicacaoErro):
 
     A DPS pode ou não ter sido processada. **Nunca reenvie a requisição** sem antes chamar
     ``ServicoNfse.reconciliar(id_dps)``, que consulta a Sefin pelo Id da DPS.
+
+    Com ``nao_localizada=True`` a reconciliação já foi feita e a Sefin confirmou que não possui
+    a DPS: chamar ``emitir`` de novo, com o mesmo número, é seguro.
     """
 
-    def __init__(self, mensagem: str, id_dps: str):
+    def __init__(self, mensagem: str, id_dps: str, *, nao_localizada: bool = False):
         self.id_dps = id_dps
-        super().__init__(
-            f"{mensagem} Emissão incerta para a DPS {id_dps}: chame reconciliar() "
-            "antes de qualquer novo envio.")
+        self.nao_localizada = nao_localizada
+        if nao_localizada:
+            orientacao = (f"A Sefin confirmou que não possui a DPS {id_dps}: é seguro chamar "
+                          "emitir() novamente com o mesmo número.")
+        else:
+            orientacao = (f"Emissão incerta para a DPS {id_dps}: chame reconciliar() "
+                          "antes de qualquer novo envio.")
+        super().__init__(f"{mensagem} {orientacao}")

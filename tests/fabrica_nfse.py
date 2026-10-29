@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from dataclasses import replace
 from decimal import Decimal
 
 from lxml import etree
@@ -226,6 +227,8 @@ def nfse_xml(dps: Dps | None = None, numero_nfse: int = 1, aamm: str = "2610",
         ``(chave, xml)``. A chave usa o município, o emitente e o número informados.
     """
     dps = dps or dps_minima()
+    if dps.numero is None:
+        dps = replace(dps, numero=numero_nfse)
     chave = gerar_chave_nfse(dps.codigo_municipio_emissor, dps.documento_emitente, numero_nfse,
                              aamm, codigo)
     relogio = lambda: DATA_EMISSAO.astimezone(dt.timezone.utc) + dt.timedelta(minutes=5)  # noqa: E731
