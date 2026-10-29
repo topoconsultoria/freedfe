@@ -146,7 +146,10 @@ class ConfiguracaoNfse:
     HIPÓTESES a confirmar (smoke test na produção restrita):
         - ``prefixo_api``: a página oficial indica ``/API/SefinNacional`` na produção restrita,
           mas relatos de desenvolvedores apontam ``/SefinNacional``. Padrão: sem prefixo.
-        - ``modelo_url_consulta_publica``: a URL exata do QR Code está no anexo da NT 008.
+        - ``modelo_url_consulta_publica``: a NT 008 v1.02 (item 2.4.3) fixa
+          ``https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave=<chave>``. O endereço da
+          produção restrita usa o mesmo caminho no host ``www.producaorestrita.nfse.gov.br``
+          (a página existe; a NT não o cita).
     """
 
     ambiente: Ambiente
@@ -191,7 +194,7 @@ _CONFIGURACOES_NFSE = {
         host_sefin="https://sefin.nfse.gov.br",
         base_adn_contribuintes="https://adn.nfse.gov.br/contribuintes",
         base_parametrizacao="https://adn.nfse.gov.br/parametrizacao",
-        modelo_url_consulta_publica="https://www.nfse.gov.br/ConsultaPublica/?chave={chave}",
+        modelo_url_consulta_publica="https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave={chave}",
     ),
     Ambiente.HOMOLOGACAO: ConfiguracaoNfse(
         ambiente=Ambiente.HOMOLOGACAO,
@@ -199,7 +202,7 @@ _CONFIGURACOES_NFSE = {
         base_adn_contribuintes="https://adn.producaorestrita.nfse.gov.br/contribuintes",
         base_parametrizacao="https://adn.producaorestrita.nfse.gov.br/parametrizacao",
         modelo_url_consulta_publica=(
-            "https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?chave={chave}"),
+            "https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?tpc=1&chave={chave}"),
     ),
 }
 

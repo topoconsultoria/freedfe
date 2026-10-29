@@ -15,6 +15,7 @@ from freedfe.pdf.danfse import (
     TAMANHO_QR_MM,
     GeradorDanfse,
     extrair_dados,
+    formatar_cep,
     formatar_data,
     formatar_documento,
     formatar_moeda,
@@ -45,6 +46,10 @@ def valor(dados, titulo, rotulo):
                 if c.rotulo == rotulo)
 
 
+def identificacao(dados, rotulo):
+    return next(c.valor for linha in dados.identificacao for c in linha if c.rotulo == rotulo)
+
+
 # ---------------------------------------------------------------------------
 # Formatação e extração (sem reportlab)
 # ---------------------------------------------------------------------------
@@ -54,6 +59,7 @@ def test_formatadores():
     assert formatar_documento("11222333000181") == "11.222.333/0001-81"
     assert formatar_documento("12ABC34501DE35") == "12.ABC.345/01DE-35"
     assert formatar_documento(None) == "" and formatar_documento("abc") == "abc"
+    assert formatar_cep("44001000") == "44.001-000" and formatar_cep(None) == ""
     assert formatar_moeda("1234567.5") == "R$ 1.234.567,50" and formatar_moeda(None) == ""
     assert formatar_moeda("x") == ""
     assert formatar_percentual("2.5") == "2,50%" and formatar_percentual("") == ""
@@ -61,46 +67,132 @@ def test_formatadores():
     assert formatar_data("2026-10-29") == "29/10/2026" and formatar_data("nao-data") == "nao-data"
 
 
-def test_dados_da_nfse_minima_sem_tomador():
+def test_ordem_dos_blocos_segue_o_anexo_i_da_nt_008():
+    dados = extrair_dados(nfse_xml(dps_completa())[1])
+    assert [b.titulo for b in dados.blocos] == [
+        "PRESTADOR / FORNECEDOR", "TOMADOR / ADQUIRENTE DA OPERAÇÃO", "DESTINATÁRIO DA OPERAÇÃO",
+        "INTERMEDIÁRIO DA OPERAÇÃO", "SERVIÇO PRESTADO", "TRIBUTAÇÃO MUNICIPAL (ISSQN)",
+        "TRIBUTAÇÃO FEDERAL (EXCETO CBS)", "TRIBUTAÇÃO IBS / CBS", "VALOR TOTAL DA NFS-e",
+        "INFORMAÇÕES COMPLEMENTARES"]
+
+
+def test_identificacao_com_a_chave_em_bloco_unico():
     chave, xml = nfse_xml(dps_minima(), numero_nfse=15)
     dados = extrair_dados(xml)
     assert dados.chave == chave and dados.numero == "15"
-    assert dados.emissao == "29/10/2026 10:00:00" and dados.competencia == "29/10/2026"
-    assert dados.serie_numero_dps == "900 / 6" and dados.ambiente is Ambiente.HOMOLOGACAO
-    assert [b.titulo for b in dados.blocos] == [
-        "PRESTADOR DO SERVIÇO", "TOMADOR DO SERVIÇO", "SERVIÇO PRESTADO",
-        "TRIBUTAÇÃO MUNICIPAL (ISSQN)", "VALORES", "TOTAIS APROXIMADOS DOS TRIBUTOS"]
-    assert valor(dados, "TOMADOR", "Tomador") == "NÃO IDENTIFICADO"
-    assert valor(dados, "PRESTADOR", "CNPJ / CPF") == "11.222.333/0001-81"
-    assert valor(dados, "PRESTADOR", "Simples Nacional") == "Optante - ME/EPP"
-    assert valor(dados, "VALORES", "Valor do serviço") == "R$ 1.000,00"
-    assert valor(dados, "VALORES", "VALOR LÍQUIDO DA NFS-e") == "R$ 1.000,00"
-    assert valor(dados, "TOTAIS", "Simples Nacional (alíquota efetiva)") == "6,00%"
+    assert identificacao(dados, "CHAVE DE ACESSO DA NFS-E") == chave  # sem grupos de 4
+    assert identificacao(dados, "NÚMERO DA NFS-E") == "15"
+    assert identificacao(dados, "COMPETÊNCIA DA NFS-E") == "29/10/2026"
+    assert identificacao(dados, "DATA E HORA DA EMISSÃO DA NFS-E") == "29/10/2026 10:00:05"
+    assert identificacao(dados, "DATA E HORA DA EMISSÃO DA DPS") == "29/10/2026 10:00:00"
+    assert identificacao(dados, "SÉRIE DA DPS") == "900" and identificacao(
+        dados, "NÚMERO DA DPS") == "6"
+    assert identificacao(dados, "EMITENTE DA NFS-E") == "Prestador"
+    assert identificacao(dados, "SITUAÇÃO DA NFS-E") == "NFS-e Gerada"
+    assert dados.ambiente is Ambiente.HOMOLOGACAO and dados.tipo_ambiente == "Homologação"
+    assert dados.municipio == "Salvador" and dados.ambiente_gerador == "Sefin Nacional NFS-e"
+
+
+@pytest.mark.parametrize("situacao, texto", [
+    (SituacaoDocumento.CANCELADO, "NFS-e Cancelada"),
+    (SituacaoDocumento.SUBSTITUIDO, "NFS-e Substituída"),
+    (SituacaoDocumento.AUTORIZADO, "NFS-e Gerada")])
+def test_situacao_na_identificacao(situacao, texto):
+    dados = extrair_dados(nfse_xml(dps_minima())[1], situacao)
+    assert identificacao(dados, "SITUAÇÃO DA NFS-E") == texto
+
+
+def test_nfse_minima_suprime_blocos_sem_dados_e_marca_campos_vazios_com_traco():
+    dados = extrair_dados(nfse_xml(dps_minima())[1])
+    assert [b.mensagem for b in dados.blocos[1:4]] == [
+        "TOMADOR/ADQUIRENTE DA OPERAÇÃO NÃO IDENTIFICADO NA NFS-e",
+        "DESTINATÁRIO DA OPERAÇÃO NÃO IDENTIFICADO NA NFS-e",
+        "INTERMEDIÁRIO DA OPERAÇÃO NÃO IDENTIFICADO NA NFS-e"]
+    assert all(b.linhas == [] for b in dados.blocos[1:4])
+    assert valor(dados, "PRESTADOR", "CNPJ / CPF / NIF") == "11.222.333/0001-81"
+    assert valor(dados, "PRESTADOR", "Telefone") == "-"  # nota 12: traço quando vazio
+    assert valor(dados, "PRESTADOR", "Código IBGE / CEP") == "2927408 / 40.000-000"
+    assert valor(dados, "PRESTADOR", "Simples Nacional na Data de Competência") == (
+        "Optante - Microempresa ou Empresa de Pequeno Porte (ME/EPP)")
+    assert valor(dados, "SERVIÇO", "Código de Tributação Nacional / Municipal") == "010101"
+    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "BC ISSQN") == "R$ 1.000,00"
+    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Alíquota Aplicada") == "2,00%"
+    assert valor(dados, "VALOR TOTAL", "Valor da Operação / Serviço") == "R$ 1.000,00"
+    assert valor(dados, "VALOR TOTAL", "Valor Líquido da NFS-e") == "R$ 1.000,00"
+    assert all("IBS" not in b.titulo for b in dados.blocos)  # bloco opcional (nota 11)
+    complementares = bloco(dados, "INFORMAÇÕES").linhas[0][0].valor
+    assert complementares.endswith("Simples Nacional: 6,00%")
 
 
 def test_dados_da_nfse_completa():
     dados = extrair_dados(nfse_xml(dps_completa())[1])
-    titulos = [b.titulo for b in dados.blocos]
-    assert "INTERMEDIÁRIO DO SERVIÇO" in titulos and "TRIBUTAÇÃO FEDERAL" in titulos
-    assert "INFORMAÇÕES COMPLEMENTARES" in titulos
     assert valor(dados, "TOMADOR", "CNPJ / CPF / NIF") == "11.444.777/0001-61"
-    assert "Rua das Flores, 100, Sala 2, Centro" in valor(dados, "TOMADOR", "Endereço")
-    assert valor(dados, "SERVIÇO", "NBS").startswith("115022000")
-    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Retenção do ISSQN") == "Retido pelo tomador"
-    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Benefício municipal") == "1" * 14
-    assert valor(dados, "TRIBUTAÇÃO FEDERAL", "Retenção IRRF") == "R$ 21,00"
-    assert valor(dados, "VALORES", "Valor do serviço") == "R$ 1.500,50"
-    assert valor(dados, "VALORES", "Desconto incondicionado") == "R$ 10,00"
-    assert valor(dados, "TOTAIS", "Federais") == "13,45%"
-    assert valor(dados, "INFORMAÇÕES", "Pedido") == "PED-9"
-    assert "Obra de engenharia\nSegunda linha" == valor(dados, "SERVIÇO", "Descrição do serviço")
+    assert valor(dados, "TOMADOR", "Endereço") == "Rua das Flores, 100, Sala 2, Centro"
+    assert valor(dados, "DESTINATÁRIO", "Nome / Nome Empresarial") == "DESTINATARIO LTDA"
+    assert valor(dados, "INTERMEDIÁRIO", "CNPJ / CPF / NIF") == "529.982.247-25"
+    assert valor(dados, "SERVIÇO", "Código da NBS") == "1.1502.20.00"
+    assert valor(dados, "SERVIÇO", "Descrição do Serviço") == "Obra de engenharia\nSegunda linha"
+    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Retenção do ISSQN") == "Retido pelo Tomador"
+    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Benefício Municipal") == "1" * 14
+    assert valor(dados, "TRIBUTAÇÃO MUNICIPAL", "Desconto Incondicionado") == "R$ 10,00"
+    assert valor(dados, "TRIBUTAÇÃO FEDERAL", "IRRF") == "R$ 21,00"
+    assert valor(dados, "VALOR TOTAL", "Valor da Operação / Serviço") == "R$ 1.500,50"
+    assert valor(dados, "VALOR TOTAL", "Desconto Condicionado") == "R$ 5,00"
+    texto_complementar = bloco(dados, "INFORMAÇÕES").linhas[0][0].valor.split("\n")
+    assert texto_complementar[0] == "Contrato 123/2026"
+    assert texto_complementar[1].startswith("NFS-e Subst.: 29274082211222333000181")  # nota 7
+    assert "Cod. Obra: OB-1; Insc. Imob.: IMOB123" in texto_complementar  # nota 8
+    assert "Pedido: PED-9" in texto_complementar
+    assert texto_complementar[-1] == (  # nota 10
+        "Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: Federais: 13,45%; "
+        "Estaduais: 0,00%; Municipais: 2,50%")
 
 
-def test_bloco_ibscbs_so_aparece_quando_o_xml_o_traz():
+def test_bloco_issqn_vira_mensagem_quando_nao_ha_incidencia():
+    xml = nfse_xml(dps_completa())[1].replace(b"<tribISSQN>1</tribISSQN>",
+                                              b"<tribISSQN>4</tribISSQN>")
+    issqn = bloco(extrair_dados(xml), "TRIBUTAÇÃO MUNICIPAL")
+    assert issqn.mensagem == "TRIBUTAÇÃO MUNICIPAL (ISSQN) - OPERAÇÃO NÃO SUJEITA AO ISSQN"
+
+
+def test_destinatario_e_o_proprio_tomador():
+    xml = nfse_xml(dps_minima(tomador=tomador_pj()))[1].replace(
+        b"<tpEmit>1</tpEmit>", b"<tpEmit>1</tpEmit><indDest>0</indDest>")
+    assert bloco(extrair_dados(xml), "DESTINATÁRIO").mensagem == (
+        "O DESTINATÁRIO É O PRÓPRIO TOMADOR/ADQUIRENTE DA OPERAÇÃO")
+
+
+def test_pis_cofins_retidos_vao_para_contribuicoes_sociais_retidas():
+    base = nfse_xml(dps_completa())[1]
+    assert b"<tpRetPisCofins>0</tpRetPisCofins>" in base
+    normal = extrair_dados(base)
+    assert valor(normal, "TRIBUTAÇÃO FEDERAL", "Contribuições Sociais - Retidas") == "R$ 14,00"
+    assert valor(normal, "TRIBUTAÇÃO FEDERAL", "PIS - Débito Apuração Própria") == "R$ 9,10"
+    retido = extrair_dados(base.replace(b"<tpRetPisCofins>0</tpRetPisCofins>",
+                                        b"<tpRetPisCofins>1</tpRetPisCofins>"))
+    # CSLL 14,00 + PIS 9,10 + COFINS 42,02; débito de apuração própria zerado (NT 008).
+    assert valor(retido, "TRIBUTAÇÃO FEDERAL", "Contribuições Sociais - Retidas") == "R$ 65,12"
+    assert valor(retido, "TRIBUTAÇÃO FEDERAL", "PIS - Débito Apuração Própria") == "R$ 0,00"
+    assert valor(retido, "TRIBUTAÇÃO FEDERAL", "COFINS - Débito Apuração Própria") == "R$ 0,00"
+    assert valor(retido, "TRIBUTAÇÃO FEDERAL", "Descrição Contrib. Sociais - Retidas") == (
+        "PIS/COFINS Retidos")
+
+
+def test_descricao_das_contribuicoes_so_para_competencia_ate_2026():
+    base = nfse_xml(dps_completa())[1]
+    futuro = base.replace(b"<dCompet>2026-10-28</dCompet>", b"<dCompet>2027-01-05</dCompet>")
+    assert futuro != base
+    rotulos = [c.rotulo for linha in bloco(extrair_dados(futuro), "TRIBUTAÇÃO FEDERAL").linhas
+               for c in linha]
+    assert "Descrição Contrib. Sociais - Retidas" not in rotulos
+    assert "Descrição Contrib. Sociais - Retidas" in [
+        c.rotulo for linha in bloco(extrair_dados(base), "TRIBUTAÇÃO FEDERAL").linhas
+        for c in linha]
+
+
+def test_bloco_ibscbs_so_aparece_quando_o_xml_o_traz_calculado():
     chave, xml = nfse_xml(dps_minima())
     assert all("IBS" not in b.titulo for b in extrair_dados(xml).blocos)
-    # IBSCBS apenas dentro da DPS (informado pelo emissor): sem cálculo, sem bloco.
-    assert all("IBS" not in b.titulo for b in extrair_dados(nfse_xml(dps_completa())[1]).blocos)
     com_ibs = xml.replace(
         b"<DPS ", b"<IBSCBS><cLocalidadeIncid>2927408</cLocalidadeIncid><xLocalidadeIncid>"
                   b"Salvador</xLocalidadeIncid><valores><vBC>1000.00</vBC><uf><pIBSUF>0.10"
@@ -111,9 +203,13 @@ def test_bloco_ibscbs_so_aparece_quando_o_xml_o_traz():
                   b"<gIBSMunTot><vIBSMun>0.00</vIBSMun></gIBSMunTot></gIBS><gCBS><vCBS>9.00"
                   b"</vCBS></gCBS></totCIBS></IBSCBS><DPS ", 1)
     dados = extrair_dados(com_ibs)
-    assert valor(dados, "IBS", "Alíquota CBS") == "0,90%"
-    assert valor(dados, "IBS", "CBS") == "R$ 9,00"
-    assert valor(dados, "IBS", "Total da NF (com IBS/CBS)") == "R$ 1.000,00"
+    assert "TRIBUTAÇÃO IBS / CBS" in [b.titulo for b in dados.blocos]
+    assert valor(dados, "TRIBUTAÇÃO IBS", "Base de Cálculo") == "R$ 1.000,00"
+    assert valor(dados, "TRIBUTAÇÃO IBS", "Alíquota - CBS") == "0,90%"
+    assert valor(dados, "TRIBUTAÇÃO IBS", "Valor Apurado Estadual - IBS") == "R$ 1,00"
+    assert valor(dados, "TRIBUTAÇÃO IBS", "Valor Total Apurado - CBS") == "R$ 9,00"
+    assert valor(dados, "VALOR TOTAL", "Total do IBS/CBS") == "R$ 10,00"
+    assert valor(dados, "VALOR TOTAL", "Valor Líquido da NFS-e + IBS/CBS") == "R$ 1.000,00"
 
 
 @pytest.mark.parametrize("xml", [b"<nao-fecha", b"<outra/>", nfe_proc(
@@ -136,14 +232,34 @@ def pdf_bruto(tmp_path, xml, situacao=None, url=None, comprimir=False) -> bytes:
 def test_pdf_valido_com_conteudo_e_sem_marca_dagua(tmp_path):
     chave, xml = nfse_xml(dps_completa())
     pdf = pdf_bruto(tmp_path, xml, SituacaoDocumento.AUTORIZADO)
-    assert pdf.startswith(b"%PDF") and b"PRESTADOR" in pdf and b"CANCELADA" not in pdf
-    assert b"SUBSTITU" not in pdf
+    assert pdf.startswith(b"%PDF") and b"PRESTADOR / FORNECEDOR" in pdf
+    assert b"CANCELADA" not in pdf and b"SUBSTITU" not in pdf
 
 
 @pytest.mark.parametrize("situacao, marca", [(SituacaoDocumento.CANCELADO, b"CANCELADA"),
                                              (SituacaoDocumento.SUBSTITUIDO, b"SUBSTITU")])
 def test_marca_dagua_por_situacao(tmp_path, situacao, marca):
     assert marca in pdf_bruto(tmp_path, nfse_xml()[1], situacao)
+
+
+def test_cabecalho_e_legenda_do_qr_code_da_nt_008(tmp_path):
+    pdf = pdf_bruto(tmp_path, nfse_xml(dps_minima())[1])
+    assert b"DANFSe v2.0" in pdf and b"Documento Auxiliar da NFS-e" in pdf
+    assert b"A autenticidade desta NFS-e pode ser" in pdf
+
+
+def test_sem_validade_juridica_so_fora_de_producao(tmp_path):
+    xml = nfse_xml(dps_minima())[1]
+    assert b"NFS-e SEM VALIDADE JUR" in pdf_bruto(tmp_path, xml)  # tpAmb=2
+    producao = xml.replace(b"<tpAmb>2</tpAmb>", b"<tpAmb>1</tpAmb>")
+    assert producao != xml
+    assert b"SEM VALIDADE" not in pdf_bruto(tmp_path, producao)
+
+
+def test_bloco_suprimido_mostra_so_a_mensagem(tmp_path):
+    pdf = pdf_bruto(tmp_path, nfse_xml(dps_minima())[1])
+    assert b"INTERMEDI" in pdf and b"NFS-e)" in pdf  # mensagem do bloco suprimido
+    assert pdf.count(b"TOMADOR/ADQUIRENTE DA OPERA") == 1  # sem título duplicado
 
 
 def test_pdf_comprimido_por_padrao_e_menor(tmp_path):
@@ -159,7 +275,8 @@ def test_qr_code_aponta_para_a_consulta_publica_do_ambiente_do_xml(tmp_path, mon
     monkeypatch.setattr(qr, "QrCodeWidget", lambda v, **kw: valores.append(v) or original(v, **kw))
     chave, xml = nfse_xml(dps_minima())  # tpAmb=2: produção restrita
     pdf_bruto(tmp_path, xml)
-    assert valores == [f"https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?chave={chave}"]
+    assert valores == [
+        f"https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?tpc=1&chave={chave}"]
     valores.clear()
     pdf_bruto(tmp_path, xml, url=lambda c: f"https://exemplo.gov.br/c/{c}")
     assert valores == [f"https://exemplo.gov.br/c/{chave}"]
