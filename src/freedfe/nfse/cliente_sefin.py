@@ -16,18 +16,18 @@ import time
 from collections.abc import Callable
 
 from freedfe.auditoria import RegistroAuditoria
-from freedfe.excecoes import ComunicacaoErro, RespostaInvalidaErro
+from freedfe.excecoes import RespostaInvalidaErro
+from freedfe.nfse.cliente_base import ESPERAS_PADRAO, STATUS_REPETIVEIS, ClienteNfseBase
 from freedfe.nfse.envelope import comprimir_b64
-from freedfe.nfse.resposta import campo, extrair_erros, ler_json
+from freedfe.nfse.resposta import campo, ler_json
 from freedfe.servicos import ConfiguracaoNfse
 from freedfe.transporte import RespostaHttp, TransporteRest
 from freedfe.validadores import exigir_chave_nfse, exigir_id_dps
 
-ESPERAS_PADRAO = (2.0, 4.0, 8.0)
-STATUS_REPETIVEIS = frozenset({408, 425, 429, 500, 502, 503, 504})
+__all__ = ["ESPERAS_PADRAO", "STATUS_REPETIVEIS", "ClienteSefin"]
 
 
-class ClienteSefin:
+class ClienteSefin(ClienteNfseBase):
     """Chamadas à Sefin Nacional. Devolve ``RespostaHttp``; quem chama interpreta o resultado.
 
     Args:
@@ -40,24 +40,17 @@ class ClienteSefin:
             (200 quando a DPS gerou NFS-e, 404 quando não); ajustáveis após o smoke test.
     """
 
+    servico = "nfse-sefin"
+
     def __init__(self, configuracao: ConfiguracaoNfse, transporte: TransporteRest,
                  auditoria: RegistroAuditoria,
                  pausa: Callable[[float], None] = time.sleep,
                  esperas: tuple[float, ...] = ESPERAS_PADRAO,
                  status_dps_existente: frozenset[int] = frozenset({200}),
                  status_dps_inexistente: frozenset[int] = frozenset({404})):
-        self._cfg = configuracao
-        self._transporte = transporte
-        self._auditoria = auditoria
-        self._pausa = pausa
-        self._esperas = esperas
+        super().__init__(configuracao, transporte, auditoria, pausa, esperas)
         self._existente = status_dps_existente
         self._inexistente = status_dps_inexistente
-
-    @property
-    def configuracao(self) -> ConfiguracaoNfse:
-        """Configuração (URLs) em uso."""
-        return self._cfg
 
     # ------------------------------------------------------------------
     # Emissão e consulta
@@ -130,51 +123,5 @@ class ClienteSefin:
                 caminho += f"/{int(sequencia)}"
         return self._chamar("eventos", "GET", caminho, chave=chave)
 
-    # ------------------------------------------------------------------
-    # Infra
-    # ------------------------------------------------------------------
-
-    def _chamar(self, operacao: str, metodo: str, caminho: str, *, corpo: bytes | None = None,
-                timeout: int | None = None, repetir: bool | None = None,
-                **referencias: str) -> RespostaHttp:
-        repetir = metodo in ("GET", "HEAD") if repetir is None else repetir
-        esperas = list(self._esperas) if repetir else []
-        timeout = timeout or self._cfg.timeout_consulta
-        url = self._cfg.url_sefin(caminho)
-        inicio = time.monotonic()
-        tentativas = 0
-        while True:
-            tentativas += 1
-            try:
-                resposta = self._transporte.requisitar(metodo, url, corpo, timeout=timeout)
-            except ComunicacaoErro as erro:
-                if esperas:
-                    self._pausa(esperas.pop(0))
-                    continue
-                self._auditar(operacao, metodo, referencias, None, [], tentativas, inicio,
-                              erro=str(erro))
-                raise
-            if esperas and resposta.status in STATUS_REPETIVEIS:
-                self._pausa(esperas.pop(0))
-                continue
-            self._auditar(operacao, metodo, referencias, resposta.status,
-                          self._codigos(resposta), tentativas, inicio)
-            return resposta
-
-    @staticmethod
-    def _codigos(resposta: RespostaHttp) -> list[str]:
-        if resposta.status < 400:
-            return []
-        try:
-            return [erro.codigo for erro in extrair_erros(ler_json(resposta))]
-        except RespostaInvalidaErro:
-            return []
-
-    def _auditar(self, operacao: str, metodo: str, referencias: dict[str, str],
-                 status: int | None, codigos: list[str], tentativas: int, inicio: float,
-                 erro: str | None = None) -> None:
-        self._auditoria.registrar(
-            servico="nfse-sefin", operacao=operacao, metodo=metodo,
-            ambiente=int(self._cfg.ambiente), status_http=status, codigos=codigos,
-            tentativas=tentativas, duracao_ms=int((time.monotonic() - inicio) * 1000),
-            erro=erro, **referencias)
+    def _chamar(self, operacao: str, metodo: str, caminho: str, **opcoes) -> RespostaHttp:
+        return self._requisitar(operacao, metodo, self._cfg.url_sefin(caminho), **opcoes)

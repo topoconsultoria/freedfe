@@ -13,6 +13,7 @@ pasta com a fachada. Princípios:
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from collections.abc import Callable
@@ -48,6 +49,7 @@ from freedfe.nfse.identificadores import id_dps as montar_id_dps
 from freedfe.nfse.leiaute import NAMESPACE_NFSE, VersaoLeiaute
 from freedfe.nfse.modelo import Dps
 from freedfe.nfse.montador_dps import FOLGA_EMISSAO_SEGUNDOS, montador_para
+from freedfe.nfse.parametros import CacheParametros, ClienteParametros, Convenio
 from freedfe.nfse.resposta import (
     RetornoEmissao,
     RetornoEventoNfse,
@@ -62,7 +64,7 @@ from freedfe.repositorio.base import RepositorioDocumentos
 from freedfe.servicos import ConfiguracaoNfse, configuracao_nfse
 from freedfe.tipos import FUSO_BRASILIA, Ambiente, ModeloDocumento
 from freedfe.transporte import TransporteRest
-from freedfe.validadores import exigir_chave_nfse, exigir_id_dps
+from freedfe.validadores import exigir_chave_nfse, exigir_codigo_ibge, exigir_id_dps
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,8 @@ class _DpsPreparada:
     numero: int
     xml: bytes
     mes: str
+    municipio: str
+    competencia: dt.date | None
 
 
 class ServicoNfse:
@@ -144,13 +148,16 @@ class ServicoNfse:
     # Emissão
     # ------------------------------------------------------------------
 
-    def emitir(self, dps: Dps | bytes, *, leiaute: VersaoLeiaute | None = None) -> RetornoEmissao:
+    def emitir(self, dps: Dps | bytes, *, leiaute: VersaoLeiaute | None = None,
+               verificar_parametros: bool = False) -> RetornoEmissao:
         """Assina (se necessário), envia a DPS e grava a NFS-e autorizada.
 
         Args:
             dps: modelo tipado ``Dps`` ou XML pronto (``bytes``). XML que já traz ``Signature``
                 é enviado exatamente como está, sem reassinar.
             leiaute: força o leiaute do montador (padrão: pelo ambiente e pela data).
+            verificar_parametros: antes de enviar, confere o convênio do município (com cache);
+                município não aderente levanta ``ValidacaoErro`` (evita E0037).
 
         Returns:
             ``RetornoEmissao`` com a chave e o XML da NFS-e, também armazenado no repositório.
@@ -166,7 +173,7 @@ class ServicoNfse:
         with self._trava():
             estado = self._novo_estado()
             preparada = self._preparar(dps, leiaute, estado, certificado)
-            return self._enviar(preparada, estado)
+            return self._enviar(preparada, estado, verificar_parametros)
 
     def gerar_dps_assinada(self, dps: Dps | bytes, leiaute: VersaoLeiaute | None = None) -> bytes:
         """DPS assinada, sem enviar nada nem reservar número (conferência antes de emitir)."""
@@ -211,6 +218,63 @@ class ServicoNfse:
         if armazenar:
             self._repositorio.armazenar([DocumentoRecebido(xml=retorno.xml_nfse)])
         return retorno
+
+    # ------------------------------------------------------------------
+    # Parâmetros municipais
+    # ------------------------------------------------------------------
+
+    def convenio(self, codigo_municipio: str, atualizar: bool = False) -> Convenio:
+        """Convênio do município com a NFS-e Nacional (cache de 24 h; ``atualizar`` ignora-o)."""
+        municipio = exigir_codigo_ibge(codigo_municipio)
+        dados = self._cache().obter_ou_buscar(
+            municipio, "convenio", lambda: self._parametros().convenio(municipio), atualizar)
+        return Convenio.de_dict(municipio, dados)
+
+    def parametros_servico(self, codigo_municipio: str, codigo_servico: str,
+                           atualizar: bool = False) -> dict:
+        """Parâmetros do serviço (``cTribNac``) no município: alíquota, deduções, regimes."""
+        municipio = exigir_codigo_ibge(codigo_municipio)
+        return self._cache().obter_ou_buscar(
+            municipio, f"servico-{codigo_servico}",
+            lambda: self._parametros().servico_municipal(municipio, codigo_servico), atualizar)
+
+    def parametros_contribuinte(self, codigo_municipio: str, documento: str | None = None,
+                                atualizar: bool = False) -> dict:
+        """Retenções e benefícios do contribuinte (padrão: o CNPJ/CPF da fachada)."""
+        municipio = exigir_codigo_ibge(codigo_municipio)
+        documento = documento or self._interessado.documento
+        return self._cache().obter_ou_buscar(
+            municipio, f"contribuinte-{documento}",
+            lambda: self._parametros().contribuinte(municipio, documento), atualizar)
+
+    def verificar_pre_emissao(self, dps: Dps) -> list[str]:
+        """Confere o convênio do município emissor. Devolve avisos; bloqueia se não aderente.
+
+        Raises:
+            ValidacaoErro: município sem convênio com a NFS-e Nacional (E0037).
+        """
+        return self._verificar_convenio(dps.codigo_municipio_emissor, dps.data_competencia)
+
+    def _verificar_convenio(self, municipio: str, competencia: dt.date | None) -> list[str]:
+        convenio = self.convenio(municipio)
+        if convenio.aderente is False:
+            raise ValidacaoErro(f"O município {municipio} não tem convênio com a NFS-e "
+                                "Nacional neste ambiente (a Sefin rejeitaria com E0037).")
+        avisos = []
+        if (competencia is not None and convenio.data_ativacao is not None
+                and competencia < convenio.data_ativacao):
+            avisos.append(f"Competência {competencia:%d/%m/%Y} anterior à ativação do convênio "
+                          f"({convenio.data_ativacao:%d/%m/%Y}): a Sefin pode rejeitar (E0016).")
+        for aviso in avisos:
+            logger.warning(aviso)
+        return avisos
+
+    def _parametros(self) -> ClienteParametros:
+        return ClienteParametros(self.configuracao, self._obter_transporte(), self._auditoria,
+                                 pausa=self._pausa, esperas=self._opcoes.esperas_consulta)
+
+    def _cache(self) -> CacheParametros:
+        return CacheParametros(self._pasta / "_estado" / "parametros_nfse", self._relogio)
 
     # ------------------------------------------------------------------
     # Eventos: cancelamento
@@ -345,7 +409,8 @@ class ServicoNfse:
             xml = etree.tostring(raiz, encoding="utf-8")
         return _DpsPreparada(
             id_dps=identificador, serie=int(identificador[25:30]), numero=int(identificador[30:45]),
-            xml=xml, mes=(inf.findtext(f"{_NS}dhEmi") or "")[:7] or "sem-data")
+            xml=xml, mes=(inf.findtext(f"{_NS}dhEmi") or "")[:7] or "sem-data",
+            municipio=identificador[3:10], competencia=self._competencia(inf))
 
     def _montar(self, dps: Dps, leiaute: VersaoLeiaute, estado: EstadoEmissao) -> etree._Element:
         if dps.numero is None:
@@ -391,6 +456,13 @@ class ServicoNfse:
         return raiz
 
     @staticmethod
+    def _competencia(inf: etree._Element) -> dt.date | None:
+        try:
+            return dt.date.fromisoformat((inf.findtext(f"{_NS}dCompet") or "").strip())
+        except ValueError:
+            return None
+
+    @staticmethod
     def _id_esperado(inf: etree._Element) -> str | None:
         """Id recomposto a partir dos campos, quando todos estão presentes."""
         papel = {"1": "prest", "2": "toma", "3": "interm"}.get(
@@ -420,7 +492,8 @@ class ServicoNfse:
     # Envio e máquina de estados
     # ------------------------------------------------------------------
 
-    def _enviar(self, preparada: _DpsPreparada, estado: EstadoEmissao) -> RetornoEmissao:
+    def _enviar(self, preparada: _DpsPreparada, estado: EstadoEmissao,
+                verificar_parametros: bool = False) -> RetornoEmissao:
         id_dps = preparada.id_dps
         registro = estado.obter(id_dps)
         if registro is not None:
@@ -436,6 +509,8 @@ class ServicoNfse:
                 if retorno is not None:
                     return retorno
                 estado.marcar(id_dps, SituacaoEmissao.PENDENTE, motivo="nao_localizada_na_sefin")
+        if verificar_parametros:
+            self._verificar_convenio(preparada.municipio, preparada.competencia)
         estado.reservar(id_dps, preparada.serie, preparada.numero)
         tentativa = estado.obter(id_dps).tentativas + 1
         caminho_dps = self._gravar_arquivo(preparada, tentativa, "dps.xml", preparada.xml)

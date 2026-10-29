@@ -39,6 +39,7 @@ __all__ = [
     "interpretar_lista_eventos",
     "ler_chave_do_xml",
     "ler_json",
+    "levantar_rejeicao",
 ]
 
 # Status em que a Sefin pode ou não ter processado a requisição: nunca reenviar sem consultar.
@@ -145,7 +146,7 @@ def interpretar_emissao(resposta: RespostaHttp, id_dps: str | None = None) -> Re
         raise EmissaoIncertaErro(f"A Sefin respondeu HTTP {resposta.status}.", id_dps or "?")
     if 200 <= resposta.status < 300:
         return _retorno_nfse(resposta, id_dps)
-    _levantar_rejeicao(resposta, id_dps)
+    levantar_rejeicao(resposta, id_dps)
     raise AssertionError("inalcançável")  # pragma: no cover
 
 
@@ -153,7 +154,7 @@ def interpretar_consulta_nfse(resposta: RespostaHttp) -> RetornoEmissao:
     """Resultado do ``GET /nfse/{chave}`` (200 com ``nfseXmlGZipB64``)."""
     if 200 <= resposta.status < 300:
         return _retorno_nfse(resposta, None)
-    _levantar_rejeicao(resposta, None)
+    levantar_rejeicao(resposta, None)
     raise AssertionError("inalcançável")  # pragma: no cover
 
 
@@ -176,7 +177,7 @@ def _retorno_nfse(resposta: RespostaHttp, id_dps: str | None) -> RetornoEmissao:
         data_processamento=campo(dados, "dataHoraProcessamento", "dataProcessamento"))
 
 
-def _levantar_rejeicao(resposta: RespostaHttp, id_dps: str | None) -> None:
+def levantar_rejeicao(resposta: RespostaHttp, id_dps: str | None) -> None:
     try:
         dados = ler_json(resposta)
     except RespostaInvalidaErro:
@@ -202,7 +203,7 @@ def interpretar_evento(resposta: RespostaHttp, chave_nfse: str,
     if resposta.status in STATUS_INCERTOS:
         raise ComunicacaoErro(f"A Sefin respondeu HTTP {resposta.status} ao registrar o evento.")
     if not 200 <= resposta.status < 300:
-        _levantar_rejeicao(resposta, None)
+        levantar_rejeicao(resposta, None)
     dados = ler_json(resposta)
     texto_xml = campo(dados, "eventoXmlGZipB64", "eventoXml", "xmlGZipB64", "arquivoXml")
     ambiente = campo(dados, "tipoAmbiente", "tpAmb")
@@ -224,7 +225,7 @@ def interpretar_lista_eventos(resposta: RespostaHttp) -> list[bytes]:
     if resposta.status == 404:
         return []
     if not 200 <= resposta.status < 300:
-        _levantar_rejeicao(resposta, None)
+        levantar_rejeicao(resposta, None)
     dados = ler_json(resposta)
     itens = campo(dados, "eventos", "evento")
     itens = itens if isinstance(itens, list) else ([itens] if itens else [dados])
