@@ -6,7 +6,10 @@ import datetime as dt
 import json
 from decimal import Decimal
 
+from lxml import etree
+
 from freedfe.nfse.envelope import comprimir_b64
+from freedfe.nfse.leiaute import NAMESPACE_NFSE
 from freedfe.nfse.modelo import (
     BeneficioMunicipal,
     Destinatario,
@@ -33,7 +36,8 @@ from freedfe.nfse.modelo import (
     TributacaoRegularIbsCbs,
     Valores,
 )
-from freedfe.tipos import FUSO_BRASILIA
+from freedfe.nfse.montador_dps import MontadorDps
+from freedfe.tipos import FUSO_BRASILIA, Ambiente
 from freedfe.transporte import RespostaHttp
 from freedfe.validadores import _digito_modulo_11
 
@@ -42,7 +46,7 @@ from fabrica_xml import CNPJ_INTERESSADO
 MUNICIPIO = "2927408"  # Salvador/BA (código IBGE de 7 dígitos)
 MUNICIPIO_TOMADOR = "2910800"  # Feira de Santana/BA
 CNPJ_PRESTADOR = CNPJ_INTERESSADO
-CNPJ_TOMADOR = "11222333000181"
+CNPJ_TOMADOR = "11444777000161"
 CPF_TOMADOR = "52998224725"
 
 
@@ -181,3 +185,100 @@ def dps_completa(**alteracoes) -> Dps:
         ibs_cbs=ibs_cbs_completo())
     dados.update(alteracoes)
     return Dps(**dados)
+
+
+# ---------------------------------------------------------------------------
+# XML da NFS-e e de eventos (estrutura do XSD NFSe_v1.01 / evento_v1.01)
+# ---------------------------------------------------------------------------
+
+NS_DSIG = "http://www.w3.org/2000/09/xmldsig#"
+ASSINATURA_FICTICIA = (
+    f'<Signature xmlns="{NS_DSIG}"><SignedInfo>'
+    '<CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>'
+    '<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>'
+    '<Reference URI="#ID"><Transforms><Transform Algorithm="http://www.w3.org/2000/09/'
+    'xmldsig#enveloped-signature"/></Transforms><DigestMethod Algorithm="http://www.w3.org/'
+    '2001/04/xmlenc#sha256"/><DigestValue>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</DigestValue>'
+    '</Reference></SignedInfo><SignatureValue>AAAA</SignatureValue><KeyInfo><X509Data>'
+    '<X509Certificate>AAAA</X509Certificate></X509Data></KeyInfo></Signature>')
+
+
+def _q(nome: str) -> str:
+    return f"{{{NAMESPACE_NFSE}}}{nome}"
+
+
+def _filho(pai, nome: str, texto=None):
+    elemento = etree.SubElement(pai, _q(nome))
+    if texto is not None:
+        elemento.text = str(texto)
+    return elemento
+
+
+def _assinatura_ficticia(pai) -> None:
+    pai.append(etree.fromstring(ASSINATURA_FICTICIA))
+
+
+def nfse_xml(dps: Dps | None = None, numero_nfse: int = 1, aamm: str = "2610",
+             codigo: int = 123456789) -> tuple[str, bytes]:
+    """NFS-e sintética no leiaute do XSD 1.01, com a DPS real embutida.
+
+    Returns:
+        ``(chave, xml)``. A chave usa o município, o emitente e o número informados.
+    """
+    dps = dps or dps_minima()
+    chave = gerar_chave_nfse(dps.codigo_municipio_emissor, dps.documento_emitente, numero_nfse,
+                             aamm, codigo)
+    relogio = lambda: DATA_EMISSAO.astimezone(dt.timezone.utc) + dt.timedelta(minutes=5)  # noqa: E731
+    dps_xml = MontadorDps(Ambiente.HOMOLOGACAO, relogio).montar(dps)
+    raiz = etree.Element(_q("NFSe"), nsmap={None: NAMESPACE_NFSE}, versao="1.01")
+    inf = etree.SubElement(raiz, _q("infNFSe"), Id=f"NFS{chave}")
+    for nome, valor in (("xLocEmi", "Salvador"), ("xLocPrestacao", "Salvador"),
+                        ("nNFSe", numero_nfse), ("cLocIncid", dps.codigo_municipio_emissor),
+                        ("xLocIncid", "Salvador"), ("xTribNac", "Analise e desenvolvimento"),
+                        ("verAplic", "SefinNac_Pre_1.5.0"), ("ambGer", 2), ("tpEmis", 1),
+                        ("procEmi", 1), ("cStat", 100), ("dhProc", "2026-10-29T10:00:05-03:00"),
+                        ("nDFSe", 123456)):
+        _filho(inf, nome, valor)
+    emit = _filho(inf, "emit")
+    _filho(emit, "CNPJ", dps.prestador.cnpj or CNPJ_PRESTADOR)
+    _filho(emit, "IM", "152422")
+    _filho(emit, "xNome", "EMPRESA PRESTADORA DE TESTE LTDA")
+    endereco = _filho(emit, "enderNac")
+    for nome, valor in (("xLgr", "RUA DE TESTE"), ("nro", "100"), ("xBairro", "CENTRO"),
+                        ("cMun", dps.codigo_municipio_emissor), ("UF", "BA"), ("CEP", "40000000")):
+        _filho(endereco, nome, valor)
+    valores = _filho(inf, "valores")
+    for nome, valor in (("vBC", dps.valores.servico), ("pAliqAplic", "2.00"),
+                        ("vISSQN", "20.00"), ("vLiq", dps.valores.servico)):
+        _filho(valores, nome, valor)
+    inf.append(dps_xml)
+    _assinatura_ficticia(raiz)
+    return chave, etree.tostring(raiz, encoding="utf-8")
+
+
+def evento_nfse_xml(chave: str, tipo: str = "101101", sequencia: int = 1,
+                    autor: str = CNPJ_PRESTADOR, motivo: str = "1",
+                    dh_evento: str = "2026-10-29T11:00:00-03:00") -> bytes:
+    """Evento registrado (raiz ``evento``) com o pedido de cancelamento embutido."""
+    raiz = etree.Element(_q("evento"), nsmap={None: NAMESPACE_NFSE}, versao="1.01")
+    inf = etree.SubElement(raiz, _q("infEvento"), Id=f"EVT{chave}{tipo}{sequencia:03d}")
+    for nome, valor in (("verAplic", "SefinNac_Pre_1.5.0"), ("ambGer", 2),
+                        ("nSeqEvento", sequencia), ("dhProc", "2026-10-29T11:00:05-03:00"),
+                        ("nDFSe", 654321)):
+        _filho(inf, nome, valor)
+    pedido = etree.SubElement(inf, _q("pedRegEvento"), versao="1.01")
+    info = etree.SubElement(pedido, _q("infPedReg"), Id=f"PRE{chave}{tipo}")
+    _filho(info, "tpAmb", 2)
+    _filho(info, "verAplic", "freedfe/test")
+    _filho(info, "dhEvento", dh_evento)
+    _filho(info, "CPFAutor" if len(autor) == 11 else "CNPJAutor", autor)
+    _filho(info, "chNFSe", chave)
+    descricoes = {"101101": "Cancelamento de NFS-e",
+                  "105102": "Cancelamento de NFS-e por Substituicao"}
+    evento = _filho(info, f"e{tipo}")
+    _filho(evento, "xDesc", descricoes.get(tipo, "Evento de teste"))
+    if tipo == "101101":
+        _filho(evento, "cMotivo", motivo)
+        _filho(evento, "xMotivo", "Cancelamento solicitado pelo prestador")
+    _assinatura_ficticia(raiz)
+    return etree.tostring(raiz, encoding="utf-8")

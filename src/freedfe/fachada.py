@@ -100,6 +100,7 @@ class FreeDFe:
             max_lotes: máximo de chamadas por modelo (cada uma traz até 50 documentos).
         """
         modelos = self._modelos(modelos)
+        self._rejeitar_nfse(modelos)
         self._validar_uf(modelos)
         resultados = []
         for modelo in modelos:
@@ -110,6 +111,7 @@ class FreeDFe:
     def consultar_nsu(self, modelo: ModeloDocumento | str, nsu: str | int) -> RetornoDistribuicao:
         """Busca um NSU específico (lacuna). Limite de 20 consultas pontuais por hora."""
         modelo = ModeloDocumento.normalizar(modelo)
+        self._rejeitar_nfse([modelo])
         with TravaArquivo(self._arquivo_estado(modelo).with_suffix(".lock")):
             return self._cliente_distribuicao(modelo).consultar_nsu(nsu)
 
@@ -275,6 +277,12 @@ class FreeDFe:
         if filtro.direcao is not Direcao.TODOS and not filtro.cnpj_cpf:
             filtro = replace(filtro, cnpj_cpf=self.interessado.documento)
         return filtro
+
+    @staticmethod
+    def _rejeitar_nfse(modelos: Iterable[ModeloDocumento]) -> None:
+        """A NFS-e Nacional não usa o Web Service SOAP de distribuição por modelo."""
+        if ModeloDocumento.NFSE in modelos:
+            raise ValidacaoErro("A NFS-e Nacional tem fluxo próprio: use dfe.nfse.")
 
     def _validar_uf(self, modelos: list[ModeloDocumento]) -> None:
         """Falha antes de qualquer chamada se algum modelo exigir UF não informada."""
