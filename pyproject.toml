@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "freedfe"
-version = "0.1.0"
-description = "Consulta, download de XML e geração de PDF de NF-e, CT-e e MDF-e de interesse de um CNPJ/CPF pelos Web Services oficiais de Distribuição DF-e (SEFAZ)."
+version = "0.2.0"
+description = "Distribuição DF-e (NF-e, CT-e, MDF-e) por CNPJ/CPF e NFS-e Nacional: emissão, consulta, cancelamento e DANFSe em PDF com QR Code."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 authors = [{ name = "Topo Consultoria" }]
-keywords = ["nfe", "cte", "mdfe", "sefaz", "dfe", "distribuicao", "danfe"]
+keywords = ["nfe", "cte", "mdfe", "sefaz", "dfe", "distribuicao", "danfe", "nfse", "danfse", "sefin"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
@@ -25,7 +25,8 @@ dependencies = [
 [project.optional-dependencies]
 pdf = ["brazilfiscalreport[dacte,damdfe]>=1.0"]
 xlsx = ["openpyxl>=3.1"]
-todos = ["freedfe[pdf,xlsx]"]
+nfse = ["reportlab>=4"]
+todos = ["freedfe[pdf,xlsx,nfse]"]
 dev = ["freedfe[todos]", "pytest>=7", "ruff>=0.4"]
 
 [project.urls]
@@ -37,6 +38,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["rede: acessa os servidores reais da NFS-e (opt-in: FREEDFE_TESTE_REDE=1)"]
 
 [tool.ruff]
 line-length = 100
@@ -52,4 +54,4 @@ ignore = ["N818"]  # exceções seguem a nomenclatura em português (sufixo "Err
 
 [tool.ruff.lint.isort]
 known-first-party = ["freedfe"]
-known-local-folder = ["conftest", "fabrica_xml"]
+known-local-folder = ["conftest", "fabrica_xml", "fabrica_nfse"]

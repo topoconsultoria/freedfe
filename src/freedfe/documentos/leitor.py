@@ -9,12 +9,15 @@ from freedfe.documentos.extratores import (
     ExtratorCTe,
     ExtratorDados,
     ExtratorEvento,
+    ExtratorEventoNFSe,
     ExtratorMDFe,
     ExtratorNFe,
+    ExtratorNFSe,
     ExtratorResumoNFe,
 )
 from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento
 from freedfe.excecoes import ValidacaoErro
+from freedfe.nfse.leiaute import NAMESPACE_NFSE
 from freedfe.xml_utils import nome_local
 
 logger = logging.getLogger(__name__)
@@ -32,9 +35,15 @@ class LeitorDocumentoFiscal:
 
     @staticmethod
     def extratores_padrao() -> dict[str, ExtratorDados]:
-        """Mapeamento elemento raiz -> extrator."""
+        """Mapeamento elemento raiz -> extrator.
+
+        A chave é o nome local (``nfeProc``) ou a forma com namespace (``{ns}evento``), que
+        tem prioridade: a NFS-e usa a raiz ``evento``, sem relação com os eventos da NF-e.
+        """
         nfe, cte, mdfe, evento = ExtratorNFe(), ExtratorCTe(), ExtratorMDFe(), ExtratorEvento()
         return {
+            f"{{{NAMESPACE_NFSE}}}NFSe": ExtratorNFSe(),
+            f"{{{NAMESPACE_NFSE}}}evento": ExtratorEventoNFSe(),
             "nfeProc": nfe, "NFe": nfe,
             "resNFe": ExtratorResumoNFe(),
             "cteProc": cte, "CTe": cte,
@@ -51,7 +60,7 @@ class LeitorDocumentoFiscal:
         except ET.ParseError:
             logger.warning("XML malformado ignorado na leitura.")
             return None
-        extrator = self._extratores.get(nome_local(raiz.tag))
+        extrator = self._extratores.get(raiz.tag) or self._extratores.get(nome_local(raiz.tag))
         if extrator is None:
             return None
         try:

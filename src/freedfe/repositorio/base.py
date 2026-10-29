@@ -10,7 +10,12 @@ from dataclasses import dataclass, replace
 
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.documentos.leitor import LeitorDocumentoFiscal
-from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento, evento_cancela
+from freedfe.documentos.resumo import (
+    EventoDocumento,
+    ResumoDocumento,
+    evento_cancela,
+    evento_substitui,
+)
 from freedfe.repositorio.filtro import FiltroConsulta
 from freedfe.tipos import ModeloDocumento, SituacaoDocumento
 from freedfe.validadores import formatar_nsu
@@ -86,6 +91,11 @@ class RepositorioDocumentos(ABC):
                     encontrados.append(resumo)
         return sorted(encontrados, key=_ordem_listagem)
 
+    def obter_atual(self, modelo: ModeloDocumento, chave: str) -> ResumoDocumento | None:
+        """Resumo de uma chave com a situação atualizada pelos eventos (cancelada, substituída)."""
+        resumo = self.obter(modelo, chave)
+        return self._aplicar_eventos(resumo) if resumo else None
+
     def lacunas_nsu(self, modelo: ModeloDocumento) -> list[str]:
         """NSU faltantes entre os já recebidos (candidatos a consulta pontual)."""
         nsus = sorted(int(n) for n in self._nsus(modelo))
@@ -95,8 +105,11 @@ class RepositorioDocumentos(ABC):
         return faltantes
 
     def _aplicar_eventos(self, resumo: ResumoDocumento) -> ResumoDocumento:
-        if any(evento_cancela(ev) for ev in self.eventos(resumo.modelo, resumo.chave)):
+        eventos = self.eventos(resumo.modelo, resumo.chave)
+        if any(evento_cancela(ev) for ev in eventos):  # cancelamento tem precedência
             return replace(resumo, situacao=SituacaoDocumento.CANCELADO)
+        if any(evento_substitui(ev) for ev in eventos):
+            return replace(resumo, situacao=SituacaoDocumento.SUBSTITUIDO)
         return resumo
 
     # ------------------------------------------------------------------

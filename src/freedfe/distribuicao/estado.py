@@ -24,15 +24,20 @@ def relogio_utc() -> dt.datetime:
 class EstadoNSU:
     """Estado persistido em JSON por (modelo, ambiente, interessado).
 
+    O bloqueio padrão (1 h + 5 min) é o da NF-e; a NFS-e Nacional não tem essa regra e usa um
+    intervalo configurável (``bloqueio_segundos``) para espaçar as consultas ao ADN.
+
     Regras (NT 2014.002 item 3.11.4):
         - A continuação usa somente o ``ultNSU`` devolvido pela SEFAZ.
         - Após 137, ``ultNSU == maxNSU`` ou consumo indevido: bloqueio local de 1 h + 5 min.
         - Consultas pontuais (``consNSU``/``consChNFe``): no máximo 20 por hora.
     """
 
-    def __init__(self, arquivo: str | Path, relogio: Relogio = relogio_utc):
+    def __init__(self, arquivo: str | Path, relogio: Relogio = relogio_utc,
+                 bloqueio_segundos: int = BLOQUEIO_SEGUNDOS):
         self.arquivo = Path(arquivo)
         self._relogio = relogio
+        self._bloqueio = bloqueio_segundos
         self._dados = {"ult_nsu": NSU_INICIAL, "max_nsu": None, "bloqueado_ate": None,
                        "consultas_pontuais": [], "ultimo_cstat": None,
                        "ultima_execucao": None}
@@ -72,8 +77,8 @@ class EstadoNSU:
         self._dados["ultima_execucao"] = self._relogio().isoformat()
 
     def bloquear(self) -> None:
-        """Bloqueia novas ``distNSU`` por 1 h + margem."""
-        ate = self._relogio() + dt.timedelta(seconds=BLOQUEIO_SEGUNDOS)
+        """Bloqueia novas consultas por ``bloqueio_segundos`` (padrão 1 h + margem da NF-e)."""
+        ate = self._relogio() + dt.timedelta(seconds=self._bloqueio)
         self._dados["bloqueado_ate"] = ate.isoformat()
 
     def segundos_para_liberar(self) -> int:

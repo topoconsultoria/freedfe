@@ -20,14 +20,21 @@ from freedfe.exportacao.formato import FormatoSaida
 from freedfe.interessado import Interessado
 from freedfe.manifestacao.assinatura import AssinadorXml
 from freedfe.manifestacao.cliente import ClienteManifestacao, RetornoManifestacao
-from freedfe.pdf.gerador import GeradorPdf, GeradorPdfBrazilFiscalReport
+from freedfe.nfse.servico import ConfiguracaoNfseLocal, ServicoNfse
+from freedfe.pdf.gerador import GeradorPdf, GeradorPdfPadrao
 from freedfe.repositorio.arquivos import RepositorioArquivos
 from freedfe.repositorio.base import RepositorioDocumentos, ResultadoArmazenamento
 from freedfe.repositorio.filtro import Direcao, FiltroConsulta
 from freedfe.repositorio.importador import ImportadorXml
-from freedfe.servicos import configuracao_distribuicao
+from freedfe.servicos import SERVICOS_DISTRIBUICAO, configuracao_distribuicao
 from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
-from freedfe.transporte import ClienteSoap, Transporte
+from freedfe.transporte import (
+    PROXY_AUTOMATICO,
+    ClienteRest,
+    ClienteSoap,
+    Transporte,
+    TransporteRest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +70,13 @@ class FreeDFe:
         pasta: pasta raiz dos dados; os arquivos ficam em ``<pasta>/<ambiente>/<cnpj_cpf>/``.
         ca_bundle: cadeia ICP-Brasil em PEM, se o TLS do servidor não validar.
         transporte, repositorio, gerador_pdf, relogio: dependências substituíveis.
+        transporte_rest: transporte REST da NFS-e Nacional (padrão: mTLS com o certificado).
+        config_nfse: opções da NFS-e (leiaute, XSD, prefixo da rota, URL do QR Code).
+        proxy: proxy ``http://`` do transporte padrão. ``"auto"`` (padrão) usa ``HTTPS_PROXY`` e
+            ``NO_PROXY`` do ambiente; ``None`` nunca usa proxy. O mTLS segue fim a fim (túnel
+            ``CONNECT``); proxies que interceptam TLS impedem o certificado cliente de chegar.
+
+    A NFS-e Nacional (emissão, consulta, cancelamento e DANFSe) fica em :attr:`nfse`.
     """
 
     def __init__(self, certificado: CertificadoA1 | str | Path | None = None,
@@ -72,16 +86,22 @@ class FreeDFe:
                  transporte: Transporte | None = None,
                  repositorio: RepositorioDocumentos | None = None,
                  gerador_pdf: GeradorPdf | None = None, relogio: Relogio = relogio_utc,
-                 pausa_entre_lotes: float = 1.0):
+                 pausa_entre_lotes: float = 1.0, transporte_rest: TransporteRest | None = None,
+                 config_nfse: ConfiguracaoNfseLocal | None = None,
+                 proxy: str | None = PROXY_AUTOMATICO):
         self.interessado = Interessado(cnpj=cnpj, cpf=cpf, uf=uf)
         self.ambiente = Ambiente(ambiente)
         self.pasta = Path(pasta) / self.ambiente.nome_pasta / self.interessado.documento
         self._certificado = self._carregar_certificado(certificado, senha)
         self._ca_bundle = ca_bundle
+        self._proxy = proxy
         self._transporte = transporte
+        self._transporte_rest = transporte_rest
+        self._config_nfse = config_nfse
+        self._servico_nfse: ServicoNfse | None = None
         self.repositorio = repositorio or RepositorioArquivos(
             self.pasta, self.interessado.documento)
-        self._gerador_pdf = gerador_pdf or GeradorPdfBrazilFiscalReport()
+        self._gerador_pdf = gerador_pdf or GeradorPdfPadrao(self._url_consulta_publica)
         self._relogio = relogio
         self._pausa = pausa_entre_lotes
         self._auditoria = RegistroAuditoria(self.pasta / "_estado" / "chamadas.jsonl")
@@ -96,13 +116,17 @@ class FreeDFe:
         """Baixa os documentos novos de cada modelo (``distNSU``), respeitando bloqueios.
 
         Args:
-            modelos: modelos a sincronizar. Padrão: NF-e, CT-e e MDF-e.
+            modelos: modelos a sincronizar. Padrão: NF-e, CT-e e MDF-e. ``"nfse"`` sincroniza
+                pelo ADN (equivale a ``dfe.nfse.sincronizar``) e deve ser pedido explicitamente.
             max_lotes: máximo de chamadas por modelo (cada uma traz até 50 documentos).
         """
         modelos = self._modelos(modelos)
         self._validar_uf(modelos)
         resultados = []
         for modelo in modelos:
+            if modelo is ModeloDocumento.NFSE:  # fluxo próprio, pelo ADN
+                resultados.append(self.nfse.sincronizar(max_lotes))
+                continue
             with TravaArquivo(self._arquivo_estado(modelo).with_suffix(".lock")):
                 resultados.append(self._cliente_distribuicao(modelo).sincronizar(max_lotes))
         return resultados
@@ -110,6 +134,7 @@ class FreeDFe:
     def consultar_nsu(self, modelo: ModeloDocumento | str, nsu: str | int) -> RetornoDistribuicao:
         """Busca um NSU específico (lacuna). Limite de 20 consultas pontuais por hora."""
         modelo = ModeloDocumento.normalizar(modelo)
+        self._rejeitar_nfse([modelo])
         with TravaArquivo(self._arquivo_estado(modelo).with_suffix(".lock")):
             return self._cliente_distribuicao(modelo).consultar_nsu(nsu)
 
@@ -175,14 +200,21 @@ class FreeDFe:
 
     def gerar_pdfs(self, filtro: FiltroConsulta | None = None,
                    destino: str | Path = "./pdf") -> ResultadoGeracaoPdf:
-        """Gera DANFE/DACTE/DAMDFE dos documentos com XML completo, como ``<chave>.pdf``."""
+        """Gera DANFE/DACTE/DAMDFE/DANFSe dos documentos com XML completo, como ``<chave>.pdf``.
+
+        A NFS-e usa o DANFSe local (extra ``nfse``: reportlab), com marca d'água de cancelada
+        ou substituída conforme os eventos armazenados.
+        """
         filtro = replace(self._preparar_filtro(filtro), somente_xml_completo=True)
         resultado = ResultadoGeracaoPdf()
         for resumo in self.repositorio.listar(filtro):
             caminho = Path(destino) / f"{resumo.chave}.pdf"
             try:
                 xml = self.repositorio.ler_xml(resumo)
-                resultado.gerados.append(self._gerador_pdf.gerar(xml, resumo.modelo, caminho))
+                argumentos = ({"situacao": resumo.situacao}
+                              if resumo.modelo is ModeloDocumento.NFSE else {})
+                resultado.gerados.append(
+                    self._gerador_pdf.gerar(xml, resumo.modelo, caminho, **argumentos))
             except FreeDFeErro:
                 raise  # dependência ausente etc.: não adianta continuar
             except Exception as erro:  # noqa: BLE001 - layout inesperado em um XML não interrompe o lote
@@ -222,6 +254,22 @@ class FreeDFe:
         return self._cliente_manifestacao().nao_realizada(chaves, justificativa)
 
     # ------------------------------------------------------------------
+    # NFS-e Nacional
+    # ------------------------------------------------------------------
+
+    @property
+    def nfse(self) -> ServicoNfse:
+        """Emissão, consulta e reconciliação da NFS-e Nacional (Sefin e ADN)."""
+        if self._servico_nfse is None:
+            self._servico_nfse = ServicoNfse(
+                ambiente=self.ambiente, interessado=self.interessado, pasta=self.pasta,
+                repositorio=self.repositorio, auditoria=self._auditoria,
+                obter_certificado=self._exigir_certificado,
+                obter_transporte=self._obter_transporte_rest, relogio=self._relogio,
+                opcoes=self._config_nfse, gerador_pdf=self._gerador_pdf)
+        return self._servico_nfse
+
+    # ------------------------------------------------------------------
     # Certificado
     # ------------------------------------------------------------------
 
@@ -248,13 +296,27 @@ class FreeDFe:
 
     def _obter_transporte(self) -> Transporte:
         if self._transporte is None:
-            self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle)
+            self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle,
+                                         proxy=self._proxy)
         return self._transporte
+
+    def _url_consulta_publica(self, chave: str) -> str:
+        """URL do QR Code do DANFSe, do ambiente e da configuração da fachada."""
+        return self.nfse.configuracao.url_consulta_publica(chave)
+
+    def _obter_transporte_rest(self) -> TransporteRest:
+        if self._transporte_rest is None:
+            self._transporte_rest = ClienteRest(self._exigir_certificado(), self._ca_bundle,
+                                              proxy=self._proxy)
+        return self._transporte_rest
 
     def _arquivo_estado(self, modelo: ModeloDocumento) -> Path:
         return self.pasta / "_estado" / f"nsu_{modelo.value}.json"
 
     def _estado(self, modelo: ModeloDocumento) -> EstadoNSU:
+        if modelo is ModeloDocumento.NFSE:
+            bloqueio = (self._config_nfse or ConfiguracaoNfseLocal()).bloqueio_adn_segundos
+            return EstadoNSU(self._arquivo_estado(modelo), self._relogio, bloqueio)
         return EstadoNSU(self._arquivo_estado(modelo), self._relogio)
 
     def _cliente_distribuicao(self, modelo: ModeloDocumento) -> ClienteDistribuicao:
@@ -276,16 +338,23 @@ class FreeDFe:
             filtro = replace(filtro, cnpj_cpf=self.interessado.documento)
         return filtro
 
+    @staticmethod
+    def _rejeitar_nfse(modelos: Iterable[ModeloDocumento]) -> None:
+        """A NFS-e Nacional não usa o Web Service SOAP de distribuição por modelo."""
+        if ModeloDocumento.NFSE in modelos:
+            raise ValidacaoErro("A NFS-e Nacional tem fluxo próprio: use dfe.nfse.")
+
     def _validar_uf(self, modelos: list[ModeloDocumento]) -> None:
         """Falha antes de qualquer chamada se algum modelo exigir UF não informada."""
-        sem_uf = [m.name for m in modelos if configuracao_distribuicao(m).exige_uf]
+        sem_uf = [m.name for m in modelos
+                  if m in SERVICOS_DISTRIBUICAO and configuracao_distribuicao(m).exige_uf]
         if sem_uf and not self.interessado.uf:
             raise ValidacaoErro(f"Informe 'uf' (código IBGE): exigida para {', '.join(sem_uf)}.")
 
     @staticmethod
     def _modelos(modelos) -> list[ModeloDocumento]:
         if modelos is None:
-            return list(ModeloDocumento)
+            return list(SERVICOS_DISTRIBUICAO)  # NFS-e tem fluxo próprio (dfe.nfse)
         if isinstance(modelos, (str, ModeloDocumento)):
             modelos = [modelos]
         return [ModeloDocumento.normalizar(m) for m in modelos]

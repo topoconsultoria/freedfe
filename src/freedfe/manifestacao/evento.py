@@ -10,12 +10,11 @@ from lxml import etree
 
 from freedfe.excecoes import ValidacaoErro
 from freedfe.interessado import Interessado
-from freedfe.tipos import Ambiente
+from freedfe.tipos import FUSO_BRASILIA, Ambiente
 from freedfe.validadores import exigir_chave
 
 NS_NFE = "http://www.portalfiscal.inf.br/nfe"
 C_ORGAO_AMBIENTE_NACIONAL = "91"
-FUSO_BRASILIA = dt.timezone(dt.timedelta(hours=-3))
 MAXIMO_EVENTOS_LOTE = 20
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from decimal import Decimal, InvalidOperation
@@ -187,4 +188,72 @@ class ExtratorEvento(ExtratorDados):
             descricao=texto(raiz, "descEvento") or texto(raiz, "xEvento"),
             data_evento=converter_data(texto(raiz, "dhEvento")),
             protocolo=texto(raiz, "nProt"),
+        )
+
+
+class ExtratorNFSe(ExtratorDados):
+    """NFS-e Nacional (raiz ``NFSe``): ``infNFSe`` com a DPS embutida.
+
+    ``emit`` é o prestador; o tomador, o intermediário e o valor do serviço (``vServ``) vêm da
+    DPS. O valor líquido (``vLiq``) fica no XML para quem precisar.
+    """
+
+    def extrair(self, raiz: ET.Element, interessado: str | None = None) -> ResumoDocumento:
+        inf = achar(raiz, "infNFSe")
+        dps = achar(inf, "infDPS")
+        tomador = achar(dps, "toma")
+        identificador = inf.attrib.get("Id", "") if inf is not None else ""
+        chave = identificador[3:] if re.fullmatch(r"NFS[0-9]{50}", identificador) else ""
+        return ResumoDocumento(
+            chave=chave,
+            modelo=ModeloDocumento.NFSE,
+            tipo_xml=nome_local(raiz.tag),
+            xml_completo=True,
+            numero=texto(inf, "nNFSe"),
+            serie=texto(dps, "serie"),
+            data_emissao=(converter_data(texto(dps, "dhEmi"))
+                          or converter_data(texto(inf, "dhProc"))),
+            emitente_documento=documento_de(achar(inf, "emit")),
+            emitente_nome=texto(inf, "emit", "xNome"),
+            destinatario_documento=documento_de(tomador),
+            destinatario_nome=texto(tomador, "xNome"),
+            valor_total=converter_decimal(texto(dps, "vServ")),
+            protocolo=None,
+            situacao=SituacaoDocumento.AUTORIZADO,
+            demais_participantes=self._participantes(dps),
+        )
+
+    @staticmethod
+    def _participantes(dps: ET.Element | None) -> list[str]:
+        """Intermediário e destinatário de IBS/CBS (``dest``)."""
+        encontrados = []
+        for elemento in (achar(dps, "interm"), achar(achar(dps, "IBSCBS"), "dest")):
+            documento = documento_de(elemento)
+            if documento and documento not in encontrados:
+                encontrados.append(documento)
+        return encontrados
+
+
+class ExtratorEventoNFSe(ExtratorDados):
+    """Evento de NFS-e (raiz ``evento``): pedido de registro (``pedRegEvento``) e dados do registro.
+
+    O tipo vem do elemento ``e<6 dígitos>`` (ex.: ``e101101``). Como a NFS-e não tem
+    protocolo de evento, ``protocolo`` guarda o ``Id`` do evento (``EVT`` + chave + tipo +
+    sequência), que identifica o evento de forma única e evita duplicidade entre a resposta
+    do registro e a sincronização pelo ADN.
+    """
+
+    def extrair(self, raiz: ET.Element, interessado: str | None = None) -> EventoDocumento:
+        pedido = achar(raiz, "infPedReg")
+        tipo = next((el for el in (pedido.iter() if pedido is not None else [])
+                     if re.fullmatch(r"e[0-9]{6}", nome_local(el.tag))), None)
+        inf_evento = achar(raiz, "infEvento")
+        return EventoDocumento(
+            chave=texto(pedido, "chNFSe") or "",
+            modelo=ModeloDocumento.NFSE,
+            tipo_evento=nome_local(tipo.tag)[1:] if tipo is not None else "",
+            descricao=texto(tipo, "xDesc"),
+            data_evento=converter_data(texto(pedido, "dhEvento"))
+            or converter_data(texto(raiz, "dhProc")),
+            protocolo=inf_evento.attrib.get("Id") if inf_evento is not None else None,
         )

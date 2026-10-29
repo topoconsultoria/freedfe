@@ -14,7 +14,7 @@ class ResumoDocumento:
     """Dados principais de um DF-e (NF-e, CT-e ou MDF-e) para listagem e filtro.
 
     Attributes:
-        chave: chave de acesso (44 posições).
+        chave: chave de acesso (44 posições; 50 na NFS-e Nacional).
         modelo: modelo do documento.
         tipo_xml: elemento raiz do XML armazenado (``nfeProc``, ``resNFe``, ``cteProc``...).
         xml_completo: False quando só existe o resumo (``resNFe``), antes da manifestação.
@@ -104,13 +104,25 @@ class EventoDocumento:
 
 # Eventos que cancelam o documento, por modelo. Atenção: no MDF-e, 110112 é Encerramento;
 # na NF-e, 110112 é Cancelamento por Substituição.
+# NFS-e: 101101 cancelamento, 105104 cancelamento deferido por análise fiscal e 305101
+# cancelamento por ofício. O 105102 (cancelamento por substituição) é tratado à parte.
 EVENTOS_CANCELAMENTO = {
     ModeloDocumento.NFE: frozenset({"110111", "110112"}),
     ModeloDocumento.CTE: frozenset({"110111"}),
     ModeloDocumento.MDFE: frozenset({"110111"}),
+    ModeloDocumento.NFSE: frozenset({"101101", "105104", "305101"}),
+}
+
+EVENTOS_SUBSTITUICAO = {
+    ModeloDocumento.NFSE: frozenset({"105102"}),
 }
 
 
 def evento_cancela(evento: EventoDocumento) -> bool:
     """True se o evento cancela o documento a que se refere."""
-    return evento.tipo_evento in EVENTOS_CANCELAMENTO[evento.modelo]
+    return evento.tipo_evento in EVENTOS_CANCELAMENTO.get(evento.modelo, frozenset())
+
+
+def evento_substitui(evento: EventoDocumento) -> bool:
+    """True se o evento indica que o documento foi substituído por outro (NFS-e 105102)."""
+    return evento.tipo_evento in EVENTOS_SUBSTITUICAO.get(evento.modelo, frozenset())
