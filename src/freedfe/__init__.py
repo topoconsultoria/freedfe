@@ -10,6 +10,7 @@ Uso básico::
                                destino="dfe.xlsx")
 """
 
+from freedfe._versao import __version__
 from freedfe.certificado import CertificadoA1, InfoCertificado
 from freedfe.distribuicao.cliente import ResultadoSincronizacao
 from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento
@@ -27,8 +28,6 @@ from freedfe.exportacao.formato import FormatoSaida
 from freedfe.fachada import FreeDFe, ResultadoGeracaoPdf
 from freedfe.repositorio.filtro import Direcao, FiltroConsulta
 from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
-
-__version__ = "0.1.0"
 
 __all__ = [
     "Ambiente",
@@ -52,4 +51,5 @@ __all__ = [
     "SincronizacaoEmAndamentoErro",
     "SituacaoDocumento",
     "ValidacaoErro",
+    "__version__",
 ]

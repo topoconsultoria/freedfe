@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.serialization import BestAvailableEncryption
 from cryptography.x509.oid import NameOID
 
 from freedfe.certificado import OID_CNPJ, CertificadoA1
-from freedfe.transporte import Transporte
+from freedfe.transporte import RespostaHttp, Transporte, TransporteRest
 
 from fabrica_xml import CNPJ_INTERESSADO
 
@@ -59,6 +59,27 @@ class TransporteFalso(Transporte):
         if not self.respostas:
             raise AssertionError("Chamada inesperada ao Web Service.")
         return self.respostas.pop(0)
+
+
+class TransporteRestFalso(TransporteRest):
+    """Devolve ``RespostaHttp`` pré-programadas (ou levanta a exceção programada)."""
+
+    def __init__(self, respostas: list[RespostaHttp | Exception] | None = None):
+        self.respostas = list(respostas or [])
+        self.enviados: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+
+    def requisitar(self, metodo, url, corpo=None, cabecalhos=None, timeout=None):
+        self.enviados.append((metodo, url, corpo, dict(cabecalhos or {})))
+        if not self.respostas:
+            raise AssertionError(f"Chamada inesperada: {metodo} {url}")
+        item = self.respostas.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def chamadas(self, metodo: str) -> list[tuple[str, str, bytes | None, dict[str, str]]]:
+        """Requisições registradas com o método informado."""
+        return [e for e in self.enviados if e[0] == metodo.upper()]
 
 
 class RelogioFalso:
