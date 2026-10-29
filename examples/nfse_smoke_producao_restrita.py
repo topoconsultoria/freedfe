@@ -10,7 +10,10 @@ Valida, sem gerar nota fiscal:
 Veredito (``classificar_rejeicao``), estrito: só **E0712** prova que codificação, schema e
 assinatura passaram. Outro E07xx é inconclusivo. Rejeição de **cadastro** do prestador (E0084,
 E0099, E0119, E0124, E0160, E0037) é avaliada antes do E0712 e impede a prova: corrija o
-município, a inscrição municipal ou o CNC NFS-e e rode de novo (código de saída 2). Qualquer outro
+município, a inscrição municipal ou o CNC NFS-e e rode de novo (código de saída 2). Nesse caso o
+script ainda tenta a **prova por contraste**: envia a mesma DPS com a assinatura adulterada. Se a
+adulterada volta E0714/E0715 e a correta voltou regra de cadastro, a Sefin confere a assinatura
+antes do cadastro e a assinatura correta foi aceita (código de saída 0). Qualquer outro
 código é falha, inclusive E1229 (XML sem declaração UTF-8), E0714/E0715 (assinatura) e E1235
 (schema). O processo sai com código 1 em falha ou resultado inconclusivo, para servir em CI.
 
@@ -28,6 +31,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import tempfile
+from dataclasses import replace
 from decimal import Decimal
 
 from freedfe import (
@@ -52,9 +56,11 @@ from freedfe.transporte import ClienteRest
 CODIGO_ESPERADO = "E0712"  # defeito proposital: avaliado só depois da assinatura
 ERROS_DE_ASSINATURA = frozenset({"E0714", "E0715"})
 # Pré-requisitos cadastrais checados antes do E0712 (Anexo I): CNPJ/CPF sem estabelecimento no
-# município emissor (E0084/E0099), IM não autorizada ou inativa (E0119/E0124), Simples (E0160)
+# município emissor (E0084/E0099), IM não autorizada, inativa ou sem cadastro complementar
+# (E0119/E0124/E0120), Simples (E0160)
 # e município sem convênio (E0037).
-ERROS_DE_CADASTRO = frozenset({"E0084", "E0099", "E0119", "E0124", "E0160", "E0037"})
+# E0120: IM informada sem informações complementares do prestador no CNC NFS-e do município.
+ERROS_DE_CADASTRO = frozenset({"E0084", "E0099", "E0119", "E0120", "E0124", "E0160", "E0037"})
 SAIDAS = {"ok": 0, "cadastro": 2}
 
 
@@ -74,6 +80,27 @@ def classificar_rejeicao(codigos) -> str:
     if any(codigo.startswith("E07") for codigo in codigos):
         return "inconclusivo"
     return "falha"
+
+
+def adulterar_assinatura(xml: bytes) -> bytes:
+    """Troca o 1º caractere do ``SignatureValue``: XML e schema válidos, assinatura inválida."""
+    marca = b"<SignatureValue>"
+    inicio = xml.index(marca) + len(marca)
+    trocado = b"B" if xml[inicio:inicio + 1] == b"A" else b"A"
+    return xml[:inicio] + trocado + xml[inicio + 1:]
+
+
+def classificar_contraste(codigos_correta, codigos_adulterada) -> str:
+    """``"assinatura_aceita"`` quando só a DPS adulterada é barrada pela assinatura.
+
+    Prova por contraste: se a Sefin devolve E0714/E0715 para a assinatura adulterada e uma
+    regra de cadastro para a correta, a assinatura é conferida antes do cadastro e a correta
+    passou. Qualquer outro par de respostas é ``"inconclusivo"``.
+    """
+    if (classificar_rejeicao(codigos_correta) == "cadastro"
+            and set(codigos_adulterada) & ERROS_DE_ASSINATURA):
+        return "assinatura_aceita"
+    return "inconclusivo"
 
 
 def hoje_em_brasilia() -> dt.date:
@@ -171,14 +198,16 @@ def main() -> int:
         print("3. Perfil de assinatura (DPS com defeito proposital):")
         print(f"   município emissor={municipio}, inscrição municipal "
               f"{'informada' if os.environ.get('FREEDFE_IM') else 'NÃO informada'}")
+        dps = montar_dps_com_defeito(cnpj, municipio, os.environ.get("FREEDFE_IM"))
         try:
-            nota = dfe.nfse.emitir(montar_dps_com_defeito(
-                cnpj, municipio, os.environ.get("FREEDFE_IM")))
+            nota = dfe.nfse.emitir(dps)
         except RejeicaoNfseErro as erro:
             for item in erro.erros:
                 print(f"   {item.codigo}: {item.descricao} ({item.complemento})")
             veredito = classificar_rejeicao(erro.codigos)
             print(f"   {MENSAGENS[veredito]}")
+            if veredito == "cadastro":
+                return provar_por_contraste(dfe, dps, erro.codigos)
             return SAIDAS.get(veredito, 1)
         except FreeDFeErro as erro:
             print(f"   FALHA: a emissão não chegou a uma resposta de negócio ({erro}).")
@@ -186,6 +215,30 @@ def main() -> int:
         print(f"   ATENÇÃO: a Sefin AUTORIZOU a nota {nota.chave} (produção restrita, sem "
               "validade). O defeito proposital não foi detectado; reveja o teste.")
         return 1
+
+
+def provar_por_contraste(dfe: FreeDFe, dps: Dps, codigos_correta) -> int:
+    """Envia a mesma DPS, com outro número, de assinatura adulterada, e compara as respostas."""
+    print("4. Prova por contraste (mesma DPS com a assinatura adulterada):")
+    adulterada = adulterar_assinatura(
+        dfe.nfse.gerar_dps_assinada(replace(dps, numero=dps.numero + 1)))
+    try:
+        dfe.nfse.emitir(adulterada)
+    except RejeicaoNfseErro as erro:
+        for item in erro.erros:
+            print(f"   {item.codigo}: {item.descricao} ({item.complemento})")
+        if classificar_contraste(codigos_correta, erro.codigos) == "assinatura_aceita":
+            print("   ASSINATURA ACEITA: a adulterada foi barrada pela assinatura e a correta só "
+                  "pelo cadastro. Regularize o cadastro do prestador para emitir de fato.")
+            return 0
+        print("   INCONCLUSIVO: a Sefin não barrou a adulterada pela assinatura antes do "
+              "cadastro; a ordem das regras não permite concluir.")
+        return 2
+    except FreeDFeErro as erro:
+        print(f"   INCONCLUSIVO: o contraste não chegou a uma resposta de negócio ({erro}).")
+        return 2
+    print("   FALHA: a Sefin AUTORIZOU uma DPS com assinatura adulterada; reveja o teste.")
+    return 1
 
 
 if __name__ == "__main__":
