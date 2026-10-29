@@ -1,15 +1,21 @@
 """Montagem do XML da DPS (sem assinatura) para cada leiaute da NFS-e Nacional.
 
-A ordem dos elementos segue o XSD oficial ``DPS_v1.01`` (NT 004 v2.0), conferido contra o
-pacote publicado. O leiaute da NT 009 v1.01 difere apenas no grupo ``IBSCBS`` e na posição de
-``indDest``/``dest``; **sem o grupo IBS/CBS os dois leiautes geram o mesmo XML**.
+A estrutura segue os XSD oficiais, conferidos elemento a elemento:
 
-HIPÓTESE (NT 009 v1.01): o XSD do pacote ``PRODREST...20261020`` não estava disponível ao
-escrever este módulo. A estrutura do ``IBSCBS`` foi inferida do relatório técnico: ``CST`` e
-``cClassTrib`` antes de ``gIBSCBS`` (que passa a ser opcional), ``indDest``/``dest`` na raiz de
-``infDPS`` (aqui, logo após ``interm``) e ``vAjusteBC`` no lugar de ``gReeRepRes``. Valide com
-:class:`~freedfe.nfse.validador_xsd.ValidadorXsd` antes de enviar; em caso de divergência use o
-caminho "XML pronto".
+``NT004_V2``
+    Pacote ``NFSe-ESQUEMAS_XSD-v1.01-20260209`` (produção até 30/11/2026).
+``NT009_V101``
+    Pacote ``esquemas_prod_restrita_20261020`` (release 1 da NT 009, produção restrita desde
+    20/10/2026). Diferenças em relação à NT 004: ``finNFSe`` obrigatório na raiz de ``infDPS``
+    (entre ``tpEmit`` e ``cLocEmi``, **mesmo sem IBS/CBS**); ``cServ`` com ``xDescServ`` por
+    último; ``vDedRed`` substituído por ``vAjusteBC`` (``pAjusteBCISSQN`` ou
+    ``vAjusteBCISSQN``); ``IBSCBS`` com ``CST``/``cClassTrib`` diretamente em ``trib`` e
+    ``gIBSCBS`` opcional; série limitada a 89999.
+
+A NT 009 prevê ainda o reposicionamento de ``indDest``/``dest`` para a raiz de ``infDPS``
+(seção 2.11), as notas de ajuste (``finNFSe`` 1 e 2) e ``vAjusteBCIBSCBSComExt``. Esses itens
+**não estão no XSD do release 1** e por isso não são gerados; quando o pacote da produção sair,
+acrescente um novo membro em ``VersaoLeiaute`` em vez de alterar este.
 """
 
 from __future__ import annotations
@@ -31,7 +37,9 @@ from freedfe.nfse.modelo import (
     IbsCbs,
     Pessoa,
     Prestador,
+    Servico,
     TipoTotTrib,
+    Valores,
 )
 from freedfe.tipos import FUSO_BRASILIA, Ambiente
 
@@ -109,7 +117,6 @@ class MontadorDps:
             self._pessoa(_no(inf, "toma"), dps.tomador)
         if dps.intermediario is not None:
             self._pessoa(_no(inf, "interm"), dps.intermediario)
-        self._destinatario_raiz(inf, dps)
         self._servico(inf, dps)
         self._valores(inf, dps)
         self._ibscbs(inf, dps)
@@ -142,7 +149,11 @@ class MontadorDps:
         _no(inf, "nDPS", dps.numero)
         _no(inf, "dCompet", dps.data_competencia)
         _no(inf, "tpEmit", int(dps.tipo_emitente))
+        self._finalidade(inf)
         _no(inf, "cLocEmi", dps.codigo_municipio_emissor)
+
+    def _finalidade(self, inf: etree._Element) -> None:
+        """Na NT 004 a finalidade (``finNFSe``) só existe dentro de ``IBSCBS``."""
 
     def _subst(self, inf: etree._Element, dps: Dps) -> None:
         if dps.substituicao is None:
@@ -206,9 +217,6 @@ class MontadorDps:
         _opcional(no, "xCpl", endereco.complemento)
         _no(no, "xBairro", endereco.bairro)
 
-    def _destinatario_raiz(self, inf: etree._Element, dps: Dps) -> None:
-        """No leiaute da NT 004, ``indDest``/``dest`` ficam dentro de ``IBSCBS``."""
-
     def _servico(self, inf: etree._Element, dps: Dps) -> None:
         servico = dps.servico
         no = _no(inf, "serv")
@@ -217,12 +225,7 @@ class MontadorDps:
             _no(local, "cLocPrestacao", servico.codigo_municipio_prestacao)
         else:
             _no(local, "cPaisPrestacao", servico.pais_prestacao)
-        codigo = _no(no, "cServ")
-        _no(codigo, "cTribNac", servico.codigo_tributacao_nacional)
-        _opcional(codigo, "cTribMun", servico.codigo_tributacao_municipal)
-        _no(codigo, "xDescServ", servico.descricao)
-        _opcional(codigo, "cNBS", servico.codigo_nbs)
-        _opcional(codigo, "cIntContrib", servico.codigo_interno)
+        self._codigos_servico(_no(no, "cServ"), servico)
         if servico.obra is not None:
             obra = _no(no, "obra")
             _opcional(obra, "inscImobFisc", servico.obra.inscricao_imobiliaria)
@@ -238,6 +241,23 @@ class MontadorDps:
             _opcional(complemento, "xPed", servico.pedido)
             _opcional(complemento, "xInfComp", servico.informacoes_complementares)
 
+    def _codigos_servico(self, codigo: etree._Element, servico: Servico) -> None:
+        """``cServ`` da NT 004: ``xDescServ`` logo depois de ``cTribMun``."""
+        _no(codigo, "cTribNac", servico.codigo_tributacao_nacional)
+        _opcional(codigo, "cTribMun", servico.codigo_tributacao_municipal)
+        _no(codigo, "xDescServ", servico.descricao)
+        _opcional(codigo, "cNBS", servico.codigo_nbs)
+        _opcional(codigo, "cIntContrib", servico.codigo_interno)
+
+    def _ajuste_base(self, no: etree._Element, valores: Valores) -> None:
+        """``vDedRed`` (NT 004): percentual ``pDR`` ou valor ``vDR``."""
+        if valores.deducao_percentual is not None or valores.deducao_valor is not None:
+            deducao = _no(no, "vDedRed")
+            if valores.deducao_percentual is not None:
+                _no(deducao, "pDR", valores.deducao_percentual)
+            else:
+                _no(deducao, "vDR", valores.deducao_valor)
+
     def _valores(self, inf: etree._Element, dps: Dps) -> None:
         valores = dps.valores
         no = _no(inf, "valores")
@@ -248,12 +268,7 @@ class MontadorDps:
             descontos = _no(no, "vDescCondIncond")
             _opcional(descontos, "vDescIncond", valores.desconto_incondicionado)
             _opcional(descontos, "vDescCond", valores.desconto_condicionado)
-        if valores.deducao_percentual is not None or valores.deducao_valor is not None:
-            deducao = _no(no, "vDedRed")
-            if valores.deducao_percentual is not None:
-                _no(deducao, "pDR", valores.deducao_percentual)
-            else:
-                _no(deducao, "vDR", valores.deducao_valor)
+        self._ajuste_base(no, valores)
         trib = _no(no, "trib")
         self._trib_municipal(trib, dps)
         self._trib_federal(trib, dps)
@@ -339,10 +354,10 @@ class MontadorDps:
         _no(grupo, "cClassTrib", ibs.codigo_classificacao)
         self._ibscbs_detalhe(grupo, ibs)
 
-    @staticmethod
-    def _ibscbs_cabecalho(inf: etree._Element, ibs: IbsCbs) -> etree._Element:
+    def _ibscbs_cabecalho(self, inf: etree._Element, ibs: IbsCbs) -> etree._Element:
+        """``IBSCBS`` até ``tpEnteGov``; na NT 004 abre com ``finNFSe``."""
         no = _no(inf, "IBSCBS")
-        _no(no, "finNFSe", ibs.finalidade)
+        self._finalidade_ibscbs(no)
         if ibs.indicador_consumidor_final is not None:
             _no(no, "indFinal", ibs.indicador_consumidor_final)
         _no(no, "cIndOp", ibs.codigo_indicador_operacao)
@@ -355,6 +370,9 @@ class MontadorDps:
         if ibs.ente_governamental is not None:
             _no(no, "tpEnteGov", ibs.ente_governamental)
         return no
+
+    def _finalidade_ibscbs(self, no: etree._Element) -> None:
+        _no(no, "finNFSe", 0)
 
     @staticmethod
     def _ibscbs_detalhe(grupo: etree._Element, ibs: IbsCbs) -> None:
@@ -372,29 +390,53 @@ class MontadorDps:
 
 
 class MontadorDpsNt009(MontadorDps):
-    """Leiaute da NT 009 v1.01 (produção restrita desde 20/10/2026; produção em 01/12/2026).
+    """Leiaute da NT 009 v1.01, release 1 (produção restrita desde 20/10/2026).
 
-    Difere do leiaute anterior apenas com IBS/CBS (estrutura inferida, ver o módulo).
+    Estrutura conferida contra ``esquemas_prod_restrita_20261020``; ver o módulo.
     """
 
     leiaute = VersaoLeiaute.NT009_V101
+    SERIE_MAXIMA = 89999  # TSSerieDPS: [0-9]{1,4}|[0-8][0-9]{4}
 
-    def _destinatario_raiz(self, inf: etree._Element, dps: Dps) -> None:
-        ibs = dps.ibs_cbs
-        if ibs is None:
-            return
-        _no(inf, "indDest", ibs.indicador_destinatario)
-        if ibs.destinatario is not None:
-            self._pessoa(_no(inf, "dest"), ibs.destinatario, com_inscricao=False)
+    def identificador(self, dps: Dps) -> str:
+        if int(dps.serie) > self.SERIE_MAXIMA:
+            raise ValidacaoErro(
+                f"A série {dps.serie} não é aceita no leiaute da NT 009 (máximo "
+                f"{self.SERIE_MAXIMA}).")
+        return super().identificador(dps)
+
+    def _finalidade(self, inf: etree._Element) -> None:
+        _no(inf, "finNFSe", 0)  # NFS-e regular; as notas de ajuste ainda não estão no XSD
+
+    def _finalidade_ibscbs(self, no: etree._Element) -> None:
+        """A finalidade saiu de ``IBSCBS`` e foi para a raiz de ``infDPS``."""
+
+    def _codigos_servico(self, codigo: etree._Element, servico: Servico) -> None:
+        _no(codigo, "cTribNac", servico.codigo_tributacao_nacional)
+        _opcional(codigo, "cTribMun", servico.codigo_tributacao_municipal)
+        _opcional(codigo, "cNBS", servico.codigo_nbs)
+        _opcional(codigo, "cIntContrib", servico.codigo_interno)
+        _no(codigo, "xDescServ", servico.descricao)
+
+    def _ajuste_base(self, no: etree._Element, valores: Valores) -> None:
+        """``vAjusteBC`` unifica ``vDedRed`` e ``gReeRepRes`` (NT 009, seção 2.3)."""
+        if valores.deducao_percentual is not None or valores.deducao_valor is not None:
+            ajuste = _no(no, "vAjusteBC")
+            if valores.deducao_percentual is not None:
+                _no(ajuste, "pAjusteBCISSQN", valores.deducao_percentual)
+            else:
+                _no(ajuste, "vAjusteBCISSQN", valores.deducao_valor)
 
     def _ibscbs(self, inf: etree._Element, dps: Dps) -> None:
+        """``CST``/``cClassTrib`` em ``trib``; ``gIBSCBS`` só com detalhamento."""
         ibs = dps.ibs_cbs
         if ibs is None:
             return
         no = self._ibscbs_cabecalho(inf, ibs)
-        valores = _no(no, "valores")
-        _opcional(valores, "vAjusteBC", ibs.ajuste_base_calculo)
-        trib = _no(valores, "trib")
+        _no(no, "indDest", ibs.indicador_destinatario)
+        if ibs.destinatario is not None:
+            self._pessoa(_no(no, "dest"), ibs.destinatario, com_inscricao=False)
+        trib = _no(_no(no, "valores"), "trib")
         _no(trib, "CST", ibs.cst)
         _no(trib, "cClassTrib", ibs.codigo_classificacao)
         if (ibs.codigo_credito_presumido or ibs.tributacao_regular is not None

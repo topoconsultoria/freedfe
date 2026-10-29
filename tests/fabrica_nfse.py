@@ -10,7 +10,7 @@ from decimal import Decimal
 from lxml import etree
 
 from freedfe.nfse.envelope import comprimir_b64
-from freedfe.nfse.leiaute import NAMESPACE_NFSE
+from freedfe.nfse.leiaute import NAMESPACE_NFSE, VersaoLeiaute
 from freedfe.nfse.modelo import (
     BeneficioMunicipal,
     Destinatario,
@@ -37,7 +37,7 @@ from freedfe.nfse.modelo import (
     TributacaoRegularIbsCbs,
     Valores,
 )
-from freedfe.nfse.montador_dps import MontadorDps
+from freedfe.nfse.montador_dps import montador_para
 from freedfe.tipos import FUSO_BRASILIA, Ambiente
 from freedfe.transporte import RespostaHttp
 from freedfe.validadores import _digito_modulo_11
@@ -148,8 +148,7 @@ def ibs_cbs_completo() -> IbsCbs:
                                   email="dest@exemplo.com.br"),
         codigo_credito_presumido="01",
         tributacao_regular=TributacaoRegularIbsCbs("000", "000001"),
-        diferimento=DiferimentoIbsCbs("10.00", "20.00", "30.00"),
-        ajuste_base_calculo="12.34")
+        diferimento=DiferimentoIbsCbs("10.00", "20.00", "30.00"))
 
 
 def dps_completa(**alteracoes) -> Dps:
@@ -220,8 +219,9 @@ def _assinatura_ficticia(pai) -> None:
 
 
 def nfse_xml(dps: Dps | None = None, numero_nfse: int = 1, aamm: str = "2610",
-             codigo: int = 123456789) -> tuple[str, bytes]:
-    """NFS-e sintética no leiaute do XSD 1.01, com a DPS real embutida.
+             codigo: int = 123456789, leiaute: VersaoLeiaute = VersaoLeiaute.NT004_V2
+             ) -> tuple[str, bytes]:
+    """NFS-e sintética no leiaute do XSD 1.01, com a DPS real embutida no ``leiaute`` pedido.
 
     Returns:
         ``(chave, xml)``. A chave usa o município, o emitente e o número informados.
@@ -232,7 +232,7 @@ def nfse_xml(dps: Dps | None = None, numero_nfse: int = 1, aamm: str = "2610",
     chave = gerar_chave_nfse(dps.codigo_municipio_emissor, dps.documento_emitente, numero_nfse,
                              aamm, codigo)
     relogio = lambda: DATA_EMISSAO.astimezone(dt.timezone.utc) + dt.timedelta(minutes=5)  # noqa: E731
-    dps_xml = MontadorDps(Ambiente.HOMOLOGACAO, relogio).montar(dps)
+    dps_xml = montador_para(leiaute, Ambiente.HOMOLOGACAO, relogio=relogio).montar(dps)
     raiz = etree.Element(_q("NFSe"), nsmap={None: NAMESPACE_NFSE}, versao="1.01")
     inf = etree.SubElement(raiz, _q("infNFSe"), Id=f"NFS{chave}")
     for nome, valor in (("xLocEmi", "Salvador"), ("xLocPrestacao", "Salvador"),

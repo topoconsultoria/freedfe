@@ -136,11 +136,15 @@ def test_tipos_de_evento():
     assert not TipoEventoNfse.CONFIRMACAO_TOMADOR.cancela
 
 
-@pytest.mark.skipif(not os.environ.get("FREEDFE_XSD_NFSE_NT004"),
-                    reason="defina FREEDFE_XSD_NFSE_NT004 com a pasta dos XSD da NT 004 (v1.01)")
-def test_pedido_assinado_valida_no_schema_oficial(relogio, certificado):
-    validador = ValidadorXsd(os.environ["FREEDFE_XSD_NFSE_NT004"], "pedRegEvento_v1.01.xsd")
-    raiz = montador(relogio).cancelamento(gerar_chave_nfse(), 1, JUSTIFICATIVA)
+@pytest.mark.parametrize("variavel, leiaute", [
+    ("FREEDFE_XSD_NFSE_NT004", VersaoLeiaute.NT004_V2),
+    ("FREEDFE_XSD_NFSE_NT009", VersaoLeiaute.NT009_V101)])
+def test_pedido_assinado_valida_no_schema_oficial(relogio, certificado, variavel, leiaute):
+    pasta = os.environ.get(variavel)
+    if not pasta:
+        pytest.skip(f"defina {variavel} com a pasta dos XSD oficiais")
+    validador = ValidadorXsd(pasta, "pedRegEvento_v1.01.xsd")
+    raiz = montador(relogio, leiaute=leiaute).cancelamento(gerar_chave_nfse(), 1, JUSTIFICATIVA)
     validador.validar(raiz)
     AssinadorXml(certificado, PERFIL_NFSE).assinar(raiz)
     reparsed = etree.fromstring(etree.tostring(raiz))

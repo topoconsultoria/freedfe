@@ -19,6 +19,7 @@ from freedfe import (
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.documentos.leitor import LeitorDocumentoFiscal
 from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento
+from freedfe.nfse.leiaute import VersaoLeiaute
 from freedfe.nfse.modelo import Prestador
 from freedfe.nfse.validador_xsd import ValidadorXsd
 from freedfe.repositorio.arquivos import RepositorioArquivos
@@ -226,11 +227,14 @@ def test_sincronizacao_padrao_exclui_nfse():
     assert MUNICIPIO  # fábrica carregada
 
 
-@pytest.mark.skipif(not os.environ.get("FREEDFE_XSD_NFSE_NT004"),
-                    reason="defina FREEDFE_XSD_NFSE_NT004 com a pasta dos XSD da NT 004 (v1.01)")
-def test_xml_sinteticos_validam_no_schema_oficial():
+@pytest.mark.parametrize("variavel, leiaute", [
+    ("FREEDFE_XSD_NFSE_NT004", VersaoLeiaute.NT004_V2),
+    ("FREEDFE_XSD_NFSE_NT009", VersaoLeiaute.NT009_V101)])
+def test_xml_sinteticos_validam_no_schema_oficial(variavel, leiaute):
     """Garante que as fábricas de teste espelham o leiaute real da NFS-e e do evento."""
-    pasta = os.environ["FREEDFE_XSD_NFSE_NT004"]
-    chave, xml = nfse_xml(dps_completa())
+    pasta = os.environ.get(variavel)
+    if not pasta:
+        pytest.skip(f"defina {variavel} com a pasta dos XSD oficiais")
+    chave, xml = nfse_xml(dps_completa(), leiaute=leiaute)
     assert ValidadorXsd(pasta, "NFSe_v1.01.xsd").mensagens(xml) == []
     assert ValidadorXsd(pasta, "evento_v1.01.xsd").mensagens(evento_nfse_xml(chave)) == []

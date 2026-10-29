@@ -391,7 +391,7 @@ def test_validacao_xsd_configurada_bloqueia_dps_fora_do_schema(tmp_path, certifi
 
 
 def test_leiaute_por_ambiente_e_explicito(tmp_path, certificado, relogio):
-    """Com IBS/CBS, NT 004 mantém indDest em IBSCBS; NT 009 o move para a raiz."""
+    """NT 009 acrescenta finNFSe à raiz de infDPS; NT 004 não tem esse elemento fora do IBSCBS."""
     dps = dps_minima(servico=servico_com_nbs(), ibs_cbs=ibs_cbs_minimo())
 
     pastas = iter(range(100))
@@ -405,8 +405,8 @@ def test_leiaute_por_ambiente_e_explicito(tmp_path, certificado, relogio):
             dfe.nfse.emitir(dps, leiaute=leiaute)
         return etree.fromstring(dps_enviada(rest))
 
-    def indest_na_raiz(raiz):
-        return raiz.find("n:infDPS/n:indDest", NS) is not None
+    def indest_na_raiz(raiz):  # nome histórico: indica o leiaute da NT 009
+        return raiz.find("n:infDPS/n:finNFSe", NS) is not None
 
     assert indest_na_raiz(posts(Ambiente.HOMOLOGACAO))  # produção restrita: NT 009
     assert not indest_na_raiz(posts(Ambiente.PRODUCAO))  # 29/10/2026: NT 004 em produção

@@ -159,9 +159,8 @@ def test_serializacao_compacta_sem_declaracao(montador):
 
 
 class TestIbsCbs:
-    def test_nt004_cst_dentro_de_gibscbs_e_dest_dentro_de_ibscbs(self, montador):
-        dps = dps_completa()
-        ibs = montador.montar(dps)[0].find("n:IBSCBS", NS)
+    def test_nt004_cst_dentro_de_gibscbs_e_finalidade_dentro_de_ibscbs(self, montador):
+        ibs = montador.montar(dps_completa())[0].find("n:IBSCBS", NS)
         assert nomes(ibs) == ["finNFSe", "indFinal", "cIndOp", "tpOper", "gRefNFSe",
                               "tpEnteGov", "indDest", "dest", "valores"]
         assert nomes(ibs.find("n:valores", NS)) == ["trib"]
@@ -169,14 +168,15 @@ class TestIbsCbs:
             "CST", "cClassTrib", "cCredPres", "gTribRegular", "gDif"]
         assert nomes(ibs.find("n:dest", NS)) == ["CNPJ", "xNome", "end", "fone", "email"]
 
-    def test_nt009_cst_antes_de_gibscbs_e_dest_na_raiz(self, relogio_dps):
+    def test_nt009_release_1_cst_em_trib_e_finalidade_na_raiz(self, relogio_dps):
+        """Estrutura do pacote esquemas_prod_restrita_20261020 (release 1 da NT 009)."""
         montador = MontadorDpsNt009(Ambiente.HOMOLOGACAO, relogio_dps)
         inf = montador.montar(dps_completa())[0]
-        topo = nomes(inf)
-        assert topo.index("indDest") == topo.index("interm") + 1 and "dest" in topo
+        assert "finNFSe" in nomes(inf)
         ibs = inf.find("n:IBSCBS", NS)
-        assert "indDest" not in nomes(ibs) and "dest" not in nomes(ibs)
-        assert nomes(ibs.find("n:valores", NS)) == ["vAjusteBC", "trib"]
+        assert nomes(ibs) == ["indFinal", "cIndOp", "tpOper", "gRefNFSe", "tpEnteGov",
+                              "indDest", "dest", "valores"]  # sem finNFSe; dest continua aqui
+        assert nomes(ibs.find("n:valores", NS)) == ["trib"]
         assert nomes(ibs.find("n:valores/n:trib", NS)) == ["CST", "cClassTrib", "gIBSCBS"]
         assert nomes(ibs.find("n:valores/n:trib/n:gIBSCBS", NS)) == [
             "cCredPres", "gTribRegular", "gDif"]
@@ -190,11 +190,50 @@ class TestIbsCbs:
             "n:IBSCBS/n:valores/n:trib", NS)
         assert nomes(trib004) == ["gIBSCBS"]
 
-    def test_sem_ibscbs_os_dois_leiautes_geram_o_mesmo_xml(self, relogio_dps):
-        dps = dps_completa(ibs_cbs=None)
-        nt004 = MontadorDps(Ambiente.HOMOLOGACAO, relogio_dps).serializar(dps)
-        nt009 = MontadorDpsNt009(Ambiente.HOMOLOGACAO, relogio_dps).serializar(dps)
-        assert nt004 == nt009
+
+class TestDiferencasEntreLeiautes:
+    """O que a NT 009 muda mesmo sem IBS/CBS (conferido no XSD oficial do release 1)."""
+
+    def montar(self, relogio, classe, **alteracoes):
+        return classe(Ambiente.HOMOLOGACAO, relogio).montar(dps_completa(**alteracoes))
+
+    def test_finnfse_obrigatorio_na_raiz_so_na_nt009(self, relogio_dps):
+        sem_ibs = dict(ibs_cbs=None)
+        nt004 = self.montar(relogio_dps, MontadorDps, **sem_ibs)[0]
+        nt009 = self.montar(relogio_dps, MontadorDpsNt009, **sem_ibs)[0]
+        assert "finNFSe" not in nomes(nt004)
+        topo = nomes(nt009)
+        assert topo[topo.index("tpEmit") + 1] == "finNFSe"
+        assert topo[topo.index("finNFSe") + 1] == "cLocEmi"
+        assert nt009.findtext("n:finNFSe", namespaces=NS) == "0"
+
+    def test_ordem_do_cserv(self, relogio_dps):
+        nt004 = self.montar(relogio_dps, MontadorDps)[0].find("n:serv/n:cServ", NS)
+        nt009 = self.montar(relogio_dps, MontadorDpsNt009)[0].find("n:serv/n:cServ", NS)
+        assert nomes(nt004) == ["cTribNac", "cTribMun", "xDescServ", "cNBS", "cIntContrib"]
+        assert nomes(nt009) == ["cTribNac", "cTribMun", "cNBS", "cIntContrib", "xDescServ"]
+
+    def test_vajustebc_substitui_vdedred(self, relogio_dps):
+        percentual = dict(valores=dps_completa().valores.__class__(
+            "100.00", deducao_percentual="12.50"))
+        nt004 = self.montar(relogio_dps, MontadorDps, **percentual)[0].find("n:valores", NS)
+        nt009 = self.montar(relogio_dps, MontadorDpsNt009, **percentual)[0].find("n:valores", NS)
+        assert [nomes(g) for g in nt004.findall("n:vDedRed", NS)] == [["pDR"]]
+        assert nt004.find("n:vAjusteBC", NS) is None
+        assert nt009.find("n:vDedRed", NS) is None
+        assert [nomes(g) for g in nt009.findall("n:vAjusteBC", NS)] == [["pAjusteBCISSQN"]]
+        em_valor = dict(valores=dps_completa().valores)
+        nt009 = self.montar(relogio_dps, MontadorDpsNt009, **em_valor)[0].find("n:valores", NS)
+        assert nomes(nt009.find("n:vAjusteBC", NS)) == ["vAjusteBCISSQN"]
+        assert nt009.findtext("n:vAjusteBC/n:vAjusteBCISSQN", namespaces=NS) == "100.00"
+        assert nomes(nt009)[:3] == ["vServPrest", "vDescCondIncond", "vAjusteBC"]
+
+    def test_serie_acima_de_89999_so_e_recusada_na_nt009(self, relogio_dps):
+        MontadorDps(Ambiente.HOMOLOGACAO, relogio_dps).montar(dps_minima(serie=90000))
+        montador = MontadorDpsNt009(Ambiente.HOMOLOGACAO, relogio_dps)
+        montador.montar(dps_minima(serie=89999))
+        with pytest.raises(ValidacaoErro, match="NT 009"):
+            montador.montar(dps_minima(serie=90000))
 
 
 def test_montador_para_escolhe_a_classe(relogio_dps):
@@ -254,7 +293,7 @@ def _validador(variavel: str) -> ValidadorXsd:
 
 @pytest.fixture(scope="module")
 def validador_nt004() -> ValidadorXsd:
-    """XSD da NT 004 v2.0 (pacote v1.01), em ``FREEDFE_XSD_NFSE_NT004``."""
+    """XSD da NT 004 v2.0 (``Schemas/1.01`` do pacote 20260209), em ``FREEDFE_XSD_NFSE_NT004``."""
     return _validador("FREEDFE_XSD_NFSE_NT004")
 
 

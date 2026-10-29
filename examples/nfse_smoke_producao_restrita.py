@@ -72,9 +72,14 @@ def sondar_rotas() -> str | None:
 
 
 def montar_dps_com_defeito(cnpj: str, municipio: str, inscricao_municipal: str | None) -> Dps:
-    """Prestador NÃO optante do Simples com ``pTotTribSN`` (exclusivo do Simples): E0712."""
+    """Prestador NÃO optante do Simples com ``pTotTribSN`` (exclusivo do Simples): E0712.
+
+    A série 900 é válida nos dois leiautes (a NT 009 só aceita até 89999) e o ``nDPS`` vem do
+    relógio, para nunca colidir com notas já emitidas no ambiente de testes (E0014).
+    """
     return Dps(
-        serie=99999, data_competencia=hoje_em_brasilia(), codigo_municipio_emissor=municipio,
+        serie=900, numero=int(dt.datetime.now(FUSO_BRASILIA).strftime("%y%m%d%H%M%S")),
+        data_competencia=hoje_em_brasilia(), codigo_municipio_emissor=municipio,
         prestador=Prestador(cnpj=cnpj, inscricao_municipal=inscricao_municipal,
                             opcao_simples=OpcaoSimplesNacional.NAO_OPTANTE),
         servico=Servico("010101", "Teste de assinatura (DPS com defeito proposital)",
