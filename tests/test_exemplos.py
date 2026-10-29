@@ -42,6 +42,8 @@ def test_dps_dos_exemplos_sao_montadas_nos_dois_leiautes(nome, fabrica, leiaute)
     (["E1229"], "falha"),  # XML sem declaração UTF-8: antes passava como "OK"
     (["E0714"], "falha"), (["E0715"], "falha"), (["E0712", "E0714"], "falha"),
     (["E1235"], "falha"), (["E0014"], "falha"), ([], "falha"),
+    (["E0084"], "cadastro"),  # observado na produção restrita em 29/10/2026
+    (["E0084", "E0119"], "cadastro"), (["E0084", "E1235"], "falha"),
 ])
 def test_veredito_do_smoke_so_aceita_o_defeito_proposital(codigos, veredito):
     assert carregar("nfse_smoke_producao_restrita").classificar_rejeicao(codigos) == veredito

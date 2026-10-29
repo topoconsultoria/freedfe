@@ -61,8 +61,11 @@ _NS = f"{{{NAMESPACE_NFSE}}}"
 # A Sefin real recusou com E1229 um XML ASCII sem declaração (produção restrita, 29/10/2026).
 _DECLARACAO_UTF8 = re.compile(rb"""<\?xml\s[^>]*encoding\s*=\s*["']utf-?8["']""", re.IGNORECASE)
 # Forma do convênio observada na mesma data: indicadores 0/1 dentro de parametrosConvenio.
-CONVENIO_ADERENTE = {"parametrosConvenio": {"aderenteAmbienteNacional": 1,
-                                            "aderenteEmissorNacional": 1}}
+CONVENIO_ADERENTE = {
+    "parametrosConvenio": {"aderenteAmbienteNacional": 1, "aderenteEmissorNacional": 1,
+                           "situacaoEmissaoPadraoContribuintesRFB": 0, "aderenteMAN": 1,
+                           "permiteAproveitametoDeCreditos": True},
+    "mensagem": "Parâmetros do convênio recuperados com sucesso."}
 
 
 @dataclass

@@ -8,9 +8,11 @@ Valida, sem gerar nota fiscal:
        ``totTrib`` incompatível com o regime, E0712).
 
 Veredito (``classificar_rejeicao``), estrito: só **E0712** prova que codificação, schema e
-assinatura passaram. Outro E07xx é inconclusivo. Qualquer outro código é falha, inclusive
-E1229 (XML sem declaração UTF-8), E0714/E0715 (assinatura) e E1235 (schema). O processo sai
-com código 1 em falha ou resultado inconclusivo, para servir em CI.
+assinatura passaram. Outro E07xx é inconclusivo. Rejeição de **cadastro** do prestador (E0084,
+E0099, E0119, E0124, E0160, E0037) é avaliada antes do E0712 e impede a prova: corrija o
+município, a inscrição municipal ou o CNC NFS-e e rode de novo (código de saída 2). Qualquer outro
+código é falha, inclusive E1229 (XML sem declaração UTF-8), E0714/E0715 (assinatura) e E1235
+(schema). O processo sai com código 1 em falha ou resultado inconclusivo, para servir em CI.
 
 Variáveis de ambiente:
     SEFAZ_PFX, SEFAZ_PFX_SENHA   certificado A1 e senha (nunca por argumento de linha de comando)
@@ -49,10 +51,15 @@ from freedfe.transporte import ClienteRest
 
 CODIGO_ESPERADO = "E0712"  # defeito proposital: avaliado só depois da assinatura
 ERROS_DE_ASSINATURA = frozenset({"E0714", "E0715"})
+# Pré-requisitos cadastrais checados antes do E0712 (Anexo I): CNPJ/CPF sem estabelecimento no
+# município emissor (E0084/E0099), IM não autorizada ou inativa (E0119/E0124), Simples (E0160)
+# e município sem convênio (E0037).
+ERROS_DE_CADASTRO = frozenset({"E0084", "E0099", "E0119", "E0124", "E0160", "E0037"})
+SAIDAS = {"ok": 0, "cadastro": 2}
 
 
 def classificar_rejeicao(codigos) -> str:
-    """``"ok"``, ``"inconclusivo"`` ou ``"falha"`` para os códigos devolvidos pela Sefin.
+    """``"ok"``, ``"cadastro"``, ``"inconclusivo"`` ou ``"falha"`` para os códigos da Sefin.
 
     Só o defeito proposital (E0712) prova que a DPS passou por codificação, schema e
     assinatura. Uma lista de "códigos ruins" deixaria passar rejeições novas como sucesso.
@@ -62,6 +69,8 @@ def classificar_rejeicao(codigos) -> str:
         return "falha"
     if CODIGO_ESPERADO in codigos:
         return "ok"
+    if codigos and codigos <= ERROS_DE_CADASTRO:
+        return "cadastro"
     if any(codigo.startswith("E07") for codigo in codigos):
         return "inconclusivo"
     return "falha"
@@ -115,6 +124,10 @@ def montar_dps_com_defeito(cnpj: str, municipio: str, inscricao_municipal: str |
 
 MENSAGENS = {
     "ok": "OK: E0712 confirma que codificação, schema e assinatura foram aceitos.",
+    "cadastro": "CADASTRO: a DPS passou pela codificação (sem E1229) e parou em regra cadastral do "
+                "prestador, avaliada antes do E0712. Use em FREEDFE_MUNICIPIO o código IBGE do "
+                "município do estabelecimento do CNPJ, informe FREEDFE_IM e confirme o cadastro "
+                "no CNC NFS-e desse município. A assinatura ainda não foi provada.",
     "inconclusivo": "INCONCLUSIVO: rejeição de negócio diferente da esperada (E0712). A "
                     "assinatura provavelmente passou, mas confira os códigos acima.",
     "falha": "FALHA: a DPS foi recusada antes da regra de negócio esperada. E1229 indica XML "
@@ -156,6 +169,8 @@ def main() -> int:
             print(f"   indisponível ({erro}); a rota de parametrização pode ter mudado.")
 
         print("3. Perfil de assinatura (DPS com defeito proposital):")
+        print(f"   município emissor={municipio}, inscrição municipal "
+              f"{'informada' if os.environ.get('FREEDFE_IM') else 'NÃO informada'}")
         try:
             nota = dfe.nfse.emitir(montar_dps_com_defeito(
                 cnpj, municipio, os.environ.get("FREEDFE_IM")))
@@ -164,7 +179,7 @@ def main() -> int:
                 print(f"   {item.codigo}: {item.descricao} ({item.complemento})")
             veredito = classificar_rejeicao(erro.codigos)
             print(f"   {MENSAGENS[veredito]}")
-            return 0 if veredito == "ok" else 1
+            return SAIDAS.get(veredito, 1)
         except FreeDFeErro as erro:
             print(f"   FALHA: a emissão não chegou a uma resposta de negócio ({erro}).")
             return 1

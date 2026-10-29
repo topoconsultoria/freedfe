@@ -49,7 +49,8 @@ Resolvido com o primeiro smoke test real, com A1, em 29/10/2026: os dois prefixo
 restrita aceitam o certificado; `HEAD /dps/{id}` de DPS inexistente devolve 404; a forma da
 resposta de convênio; a exigência da declaração UTF-8 (E1229).
 
-1. Aceitação da assinatura pela Sefin: o primeiro teste parou no E1229, antes da assinatura.
+1. Aceitação da assinatura pela Sefin. O segundo teste real confirmou a correção do E1229 e
+   parou no E0084, cadastro do prestador no município emissor, antes do E0712.
 2. Status 200 de `HEAD /dps/{id}` para DPS existente, nomes dos campos JSON de resposta, de evento
    e do ADN, e semântica do NSU do ADN.
 3. Semântica de `aderenteEmissorNacional` e nome do campo da data de ativação do convênio.

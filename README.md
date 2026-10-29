@@ -288,8 +288,11 @@ do ADN, leiaute e QR Code do DANFSe (NT 008 v1.02). **Observado** nos servidores
 **Ainda não confirmado** (só com o A1; teste em produção restrita antes de produção; tudo é
 configurável ou tolerante):
 
-1. Aceitação da assinatura pela Sefin: o primeiro teste real parou no E1229. O smoke test agora
-   só dá "OK" com a rejeição de negócio esperada, E0712.
+1. Aceitação da assinatura pela Sefin. Com a declaração UTF-8, o segundo teste real passou do
+   E1229 e parou no **E0084**, regra cadastral avaliada antes do E0712: o CNPJ não tem
+   estabelecimento no município emissor informado, segundo o cadastro CNPJ e o CNC NFS-e.
+   Corrija o município (código IBGE do estabelecimento) e a inscrição municipal antes de concluir
+   sobre a assinatura. O smoke test classifica esse caso como "cadastro" e sai com código 2.
 2. Status de `HEAD /dps/{id}` para DPS existente (200), nomes dos campos JSON de resposta (emissão,
    evento, ADN) e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as
    duas).
