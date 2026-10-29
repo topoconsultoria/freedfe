@@ -96,6 +96,8 @@ class ConfiguracaoNfseLocal:
         esperas_consulta: segundos de espera antes de cada nova tentativa de ``GET``/``HEAD``
             (o ``POST`` de emissão nunca é repetido). ``()`` desliga as repetições.
         pausa: função de espera entre tentativas e lotes (padrão ``time.sleep``).
+        configuracao_api: substitui por completo as URLs do ambiente (gateway corporativo,
+            servidor de testes). ``prefixo_api`` e ``url_consulta_publica`` ainda se aplicam.
     """
 
     leiaute: VersaoLeiaute | None = None
@@ -108,6 +110,7 @@ class ConfiguracaoNfseLocal:
     bloqueio_adn_segundos: int = BLOQUEIO_PADRAO_SEGUNDOS
     esperas_consulta: tuple[float, ...] = ESPERAS_PADRAO
     pausa: Callable[[float], None] | None = None
+    configuracao_api: ConfiguracaoNfse | None = None
 
 
 @dataclass
@@ -149,7 +152,8 @@ class ServicoNfse:
         self._pausa = pausa or self._opcoes.pausa or time.sleep
         self._gerador_pdf = gerador_pdf
         self._validadores: dict[VersaoLeiaute, ValidadorXsd] = {}
-        configuracao = configuracao_nfse(self._ambiente, self._opcoes.prefixo_api)
+        configuracao = self._opcoes.configuracao_api or configuracao_nfse(
+            self._ambiente, self._opcoes.prefixo_api)
         if self._opcoes.url_consulta_publica:
             configuracao = configuracao.com(
                 modelo_url_consulta_publica=self._opcoes.url_consulta_publica)

@@ -37,6 +37,14 @@ def gerar_pfx(cnpj: str = CNPJ_INTERESSADO, dias_validade: int = 365) -> bytes:
         b"teste", chave, certificado, None, BestAvailableEncryption(SENHA_TESTE.encode()))
 
 
+@pytest.fixture(autouse=True)
+def ambiente_sem_proxy(monkeypatch):
+    """Isola os testes do proxy da máquina que os executa (HTTPS_PROXY, NO_PROXY, etc.)."""
+    for nome in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY",
+                 "all_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(nome, raising=False)
+
+
 @pytest.fixture(scope="session")
 def pfx_teste() -> bytes:
     return gerar_pfx()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 from dataclasses import replace
@@ -41,6 +42,7 @@ from freedfe.nfse.montador_dps import montador_para
 from freedfe.tipos import FUSO_BRASILIA, Ambiente
 from freedfe.transporte import RespostaHttp
 from freedfe.validadores import _digito_modulo_11
+from freedfe.xml_utils import texto
 
 from fabrica_xml import CNPJ_INTERESSADO
 
@@ -229,32 +231,43 @@ def nfse_xml(dps: Dps | None = None, numero_nfse: int = 1, aamm: str = "2610",
     dps = dps or dps_minima()
     if dps.numero is None:
         dps = replace(dps, numero=numero_nfse)
-    chave = gerar_chave_nfse(dps.codigo_municipio_emissor, dps.documento_emitente, numero_nfse,
-                             aamm, codigo)
     relogio = lambda: DATA_EMISSAO.astimezone(dt.timezone.utc) + dt.timedelta(minutes=5)  # noqa: E731
     dps_xml = montador_para(leiaute, Ambiente.HOMOLOGACAO, relogio=relogio).montar(dps)
+    return nfse_de_dps_xml(dps_xml, numero_nfse, aamm, codigo)
+
+
+def nfse_de_dps_xml(dps_xml: etree._Element, numero_nfse: int = 1, aamm: str = "2610",
+                    codigo: int = 123456789) -> tuple[str, bytes]:
+    """Envolve uma DPS (assinada ou não) na NFS-e que a Sefin devolveria, com assinatura fictícia.
+
+    Os dados do emitente, do município e do valor são lidos da própria DPS.
+    """
+    municipio = texto(dps_xml, "cLocEmi") or MUNICIPIO
+    documento = texto(dps_xml, "prest", "CNPJ") or texto(dps_xml, "prest", "CPF") or CNPJ_PRESTADOR
+    valor_servico = texto(dps_xml, "vServ") or "0.00"
+    chave = gerar_chave_nfse(municipio, documento, numero_nfse, aamm, codigo)
     raiz = etree.Element(_q("NFSe"), nsmap={None: NAMESPACE_NFSE}, versao="1.01")
     inf = etree.SubElement(raiz, _q("infNFSe"), Id=f"NFS{chave}")
     for nome, valor in (("xLocEmi", "Salvador"), ("xLocPrestacao", "Salvador"),
-                        ("nNFSe", numero_nfse), ("cLocIncid", dps.codigo_municipio_emissor),
+                        ("nNFSe", numero_nfse), ("cLocIncid", municipio),
                         ("xLocIncid", "Salvador"), ("xTribNac", "Analise e desenvolvimento"),
                         ("verAplic", "SefinNac_Pre_1.5.0"), ("ambGer", 2), ("tpEmis", 1),
                         ("procEmi", 1), ("cStat", 100), ("dhProc", "2026-10-29T10:00:05-03:00"),
                         ("nDFSe", 123456)):
         _filho(inf, nome, valor)
     emit = _filho(inf, "emit")
-    _filho(emit, "CNPJ", dps.prestador.cnpj or CNPJ_PRESTADOR)
+    _filho(emit, "CNPJ", documento)
     _filho(emit, "IM", "152422")
     _filho(emit, "xNome", "EMPRESA PRESTADORA DE TESTE LTDA")
     endereco = _filho(emit, "enderNac")
     for nome, valor in (("xLgr", "RUA DE TESTE"), ("nro", "100"), ("xBairro", "CENTRO"),
-                        ("cMun", dps.codigo_municipio_emissor), ("UF", "BA"), ("CEP", "40000000")):
+                        ("cMun", municipio), ("UF", "BA"), ("CEP", "40000000")):
         _filho(endereco, nome, valor)
     valores = _filho(inf, "valores")
-    for nome, valor in (("vBC", dps.valores.servico), ("pAliqAplic", "2.00"),
-                        ("vISSQN", "20.00"), ("vLiq", dps.valores.servico)):
+    for nome, valor in (("vBC", valor_servico), ("pAliqAplic", "2.00"),
+                        ("vISSQN", "20.00"), ("vLiq", valor_servico)):
         _filho(valores, nome, valor)
-    inf.append(dps_xml)
+    inf.append(copy.deepcopy(dps_xml))
     _assinatura_ficticia(raiz)
     return chave, etree.tostring(raiz, encoding="utf-8")
 

@@ -28,7 +28,13 @@ from freedfe.repositorio.filtro import Direcao, FiltroConsulta
 from freedfe.repositorio.importador import ImportadorXml
 from freedfe.servicos import SERVICOS_DISTRIBUICAO, configuracao_distribuicao
 from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
-from freedfe.transporte import ClienteRest, ClienteSoap, Transporte, TransporteRest
+from freedfe.transporte import (
+    PROXY_AUTOMATICO,
+    ClienteRest,
+    ClienteSoap,
+    Transporte,
+    TransporteRest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,9 @@ class FreeDFe:
         transporte, repositorio, gerador_pdf, relogio: dependências substituíveis.
         transporte_rest: transporte REST da NFS-e Nacional (padrão: mTLS com o certificado).
         config_nfse: opções da NFS-e (leiaute, XSD, prefixo da rota, URL do QR Code).
+        proxy: proxy ``http://`` do transporte padrão. ``"auto"`` (padrão) usa ``HTTPS_PROXY`` e
+            ``NO_PROXY`` do ambiente; ``None`` nunca usa proxy. O mTLS segue fim a fim (túnel
+            ``CONNECT``); proxies que interceptam TLS impedem o certificado cliente de chegar.
 
     A NFS-e Nacional (emissão, consulta, cancelamento e DANFSe) fica em :attr:`nfse`.
     """
@@ -78,12 +87,14 @@ class FreeDFe:
                  repositorio: RepositorioDocumentos | None = None,
                  gerador_pdf: GeradorPdf | None = None, relogio: Relogio = relogio_utc,
                  pausa_entre_lotes: float = 1.0, transporte_rest: TransporteRest | None = None,
-                 config_nfse: ConfiguracaoNfseLocal | None = None):
+                 config_nfse: ConfiguracaoNfseLocal | None = None,
+                 proxy: str | None = PROXY_AUTOMATICO):
         self.interessado = Interessado(cnpj=cnpj, cpf=cpf, uf=uf)
         self.ambiente = Ambiente(ambiente)
         self.pasta = Path(pasta) / self.ambiente.nome_pasta / self.interessado.documento
         self._certificado = self._carregar_certificado(certificado, senha)
         self._ca_bundle = ca_bundle
+        self._proxy = proxy
         self._transporte = transporte
         self._transporte_rest = transporte_rest
         self._config_nfse = config_nfse
@@ -285,7 +296,8 @@ class FreeDFe:
 
     def _obter_transporte(self) -> Transporte:
         if self._transporte is None:
-            self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle)
+            self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle,
+                                         proxy=self._proxy)
         return self._transporte
 
     def _url_consulta_publica(self, chave: str) -> str:
@@ -294,7 +306,8 @@ class FreeDFe:
 
     def _obter_transporte_rest(self) -> TransporteRest:
         if self._transporte_rest is None:
-            self._transporte_rest = ClienteRest(self._exigir_certificado(), self._ca_bundle)
+            self._transporte_rest = ClienteRest(self._exigir_certificado(), self._ca_bundle,
+                                              proxy=self._proxy)
         return self._transporte_rest
 
     def _arquivo_estado(self, modelo: ModeloDocumento) -> Path:
