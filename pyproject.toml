@@ -52,4 +52,4 @@ ignore = ["N818"]  # exceções seguem a nomenclatura em português (sufixo "Err
 
 [tool.ruff.lint.isort]
 known-first-party = ["freedfe"]
-known-local-folder = ["conftest", "fabrica_xml"]
+known-local-folder = ["conftest", "fabrica_xml", "fabrica_nfse"]

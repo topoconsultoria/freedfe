@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from enum import Enum, IntEnum
 
 from freedfe.excecoes import ValidacaoErro
 
+# Horário de Brasília (sem horário de verão desde 2019); usado em dhEvento/dhEmi.
+FUSO_BRASILIA = dt.timezone(dt.timedelta(hours=-3))
+
 
 class ModeloDocumento(str, Enum):
-    """Modelos de DF-e atendidos pelos Web Services de Distribuição."""
+    """Modelos de documentos fiscais eletrônicos atendidos pela biblioteca.
+
+    NF-e, CT-e e MDF-e vêm dos Web Services de Distribuição (SOAP). A NFS-e Nacional
+    (``NFSE``) tem contrato próprio (REST/JSON) e a chave de acesso tem 50 posições, sem
+    código de modelo.
+    """
 
     NFE = "nfe"
     CTE = "cte"
     MDFE = "mdfe"
+    NFSE = "nfse"
 
     @property
     def codigo(self) -> str:
-        """Código do modelo fiscal (posições 21-22 da chave de acesso)."""
-        return _CODIGOS_MODELO[self]
+        """Código do modelo fiscal (posições 21-22 da chave de acesso de 44 posições)."""
+        try:
+            return _CODIGOS_MODELO[self]
+        except KeyError:
+            raise ValidacaoErro(
+                f"O modelo {self.value} não possui código de modelo na chave de acesso."
+            ) from None
 
     @classmethod
     def de_codigo(cls, codigo: str) -> ModeloDocumento:
@@ -29,7 +44,9 @@ class ModeloDocumento(str, Enum):
 
     @classmethod
     def de_chave(cls, chave: str) -> ModeloDocumento:
-        """Obtém o modelo a partir da chave de acesso de 44 posições."""
+        """Obtém o modelo a partir da chave de acesso (44 posições, ou 50 para NFS-e)."""
+        if len(chave) == TAMANHO_CHAVE_NFSE:
+            return cls.NFSE
         return cls.de_codigo(chave[20:22])
 
     @classmethod
@@ -42,6 +59,8 @@ class ModeloDocumento(str, Enum):
         except ValueError as erro:
             raise ValidacaoErro(f"Modelo de documento inválido: {valor}") from erro
 
+
+TAMANHO_CHAVE_NFSE = 50
 
 _CODIGOS_MODELO = {
     ModeloDocumento.NFE: "55",
@@ -68,3 +87,4 @@ class SituacaoDocumento(str, Enum):
     AUTORIZADO = "autorizado"
     DENEGADO = "denegado"
     CANCELADO = "cancelado"
+    SUBSTITUIDO = "substituido"

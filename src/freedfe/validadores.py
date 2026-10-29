@@ -1,4 +1,4 @@
-"""Validação de CNPJ (numérico e alfanumérico), CPF, chave de acesso e NSU."""
+"""Validação de CNPJ (numérico e alfanumérico), CPF, chaves de acesso, Id da DPS, IBGE e NSU."""
 
 from __future__ import annotations
 
@@ -65,6 +65,36 @@ def validar_chave(chave: str) -> bool:
     return int(chave[43]) == _digito_modulo_11(chave[:43], 9)
 
 
+def validar_chave_nfse(chave: str) -> bool:
+    """Valida a estrutura da chave de acesso da NFS-e Nacional (50 posições).
+
+    Composição: município emissor (7) + ambiente gerador (1) + tipo de inscrição (1) +
+    inscrição federal (14, aceita CNPJ alfanumérico) + número da NFS-e (13) + AAMM (4) +
+    código numérico (9) + DV (1).
+
+    HIPÓTESE: o algoritmo do dígito verificador (Anexo I do leiaute) não foi confirmado;
+    por isso a validação é apenas estrutural. Confirmar antes de exigir o DV.
+    """
+    chave = (chave or "").strip().upper()
+    padrao = r"[0-9]{7}[12][12][0-9A-Z]{14}[0-9]{13}[0-9]{4}[0-9]{9}[0-9]"
+    return re.fullmatch(padrao, chave) is not None
+
+
+def validar_id_dps(id_dps: str) -> bool:
+    """Valida o Id da DPS (45 posições).
+
+    Composição: ``DPS`` + IBGE(7) + tipo de inscrição(1) + inscrição(14) + série(5) + nDPS(15).
+    """
+    id_dps = (id_dps or "").strip().upper()
+    return re.fullmatch(r"DPS[0-9]{7}[12][0-9A-Z]{14}[0-9]{5}[0-9]{15}", id_dps) is not None
+
+
+def validar_codigo_ibge(codigo: str) -> bool:
+    """Valida código de município IBGE (7 dígitos, prefixo de UF existente)."""
+    codigo = (codigo or "").strip()
+    return re.fullmatch(r"[0-9]{7}", codigo) is not None and codigo[:2] in UFS_IBGE
+
+
 def validar_uf(uf: str) -> bool:
     """Valida o código IBGE da UF (ex.: ``29`` = BA, ``21`` = MA, ``17`` = TO, ``22`` = PI)."""
     return uf in UFS_IBGE
@@ -87,3 +117,27 @@ def exigir_chave(chave: str) -> str:
     if not validar_chave(normalizada):
         raise ValidacaoErro(f"Chave de acesso inválida: {chave}")
     return normalizada
+
+
+def exigir_chave_nfse(chave: str) -> str:
+    """Valida e devolve a chave de NFS-e normalizada; levanta ``ValidacaoErro`` se inválida."""
+    normalizada = (chave or "").strip().upper()
+    if not validar_chave_nfse(normalizada):
+        raise ValidacaoErro(f"Chave de acesso da NFS-e inválida: {chave}")
+    return normalizada
+
+
+def exigir_id_dps(id_dps: str) -> str:
+    """Valida e devolve o Id da DPS normalizado; levanta ``ValidacaoErro`` se inválido."""
+    normalizado = (id_dps or "").strip().upper()
+    if not validar_id_dps(normalizado):
+        raise ValidacaoErro(f"Id da DPS inválido: {id_dps}")
+    return normalizado
+
+
+def exigir_codigo_ibge(codigo: str, campo: str = "município") -> str:
+    """Valida e devolve o código IBGE; levanta ``ValidacaoErro`` se inválido."""
+    normalizado = (codigo or "").strip()
+    if not validar_codigo_ibge(normalizado):
+        raise ValidacaoErro(f"Código IBGE de {campo} inválido: {codigo}")
+    return normalizado

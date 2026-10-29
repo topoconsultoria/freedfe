@@ -10,7 +10,7 @@ Quando mudar a versão do leiaute, atualize apenas este módulo.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from freedfe.tipos import Ambiente, ModeloDocumento
 
@@ -124,3 +124,87 @@ ENDPOINTS_EVENTO_AN = {
         "https://hom1.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
 }
 NS_WSDL_EVENTO = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"
+
+
+# ---------------------------------------------------------------------------
+# NFS-e Nacional (Sefin Nacional / ADN) - REST/JSON com mTLS
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ConfiguracaoNfse:
+    """URLs e prazos da API da NFS-e Nacional em um ambiente.
+
+    Base normativa e operacional (relatório técnico de out/2026):
+        - Leiaute em produção: NT 004 v2.0 (XSD 1.01) até 30/11/2026; NT 009 v1.01 a partir
+          de 01/12/2026. A produção restrita já roda a NT 009 desde 20/10/2026.
+        - Manual Contribuintes - Emissor Público API v1.2 e Manual ADN v1.0.
+        - A API de geração do DANFSe foi suspensa (NT 008 v1.02); o PDF é gerado localmente.
+
+    As rotas mudam sem versionamento (parâmetros e DANFSe migraram para o host ADN), por
+    isso tudo fica centralizado aqui e pode ser substituído com :meth:`com`.
+
+    HIPÓTESES a confirmar (smoke test na produção restrita):
+        - ``prefixo_api``: a página oficial indica ``/API/SefinNacional`` na produção restrita,
+          mas relatos de desenvolvedores apontam ``/SefinNacional``. Padrão: sem prefixo.
+        - ``modelo_url_consulta_publica``: a URL exata do QR Code está no anexo da NT 008.
+    """
+
+    ambiente: Ambiente
+    host_sefin: str
+    base_adn_contribuintes: str
+    base_parametrizacao: str
+    modelo_url_consulta_publica: str
+    caminho_sefin: str = "/SefinNacional"
+    prefixo_api: str = ""
+    timeout_emissao: int = 60
+    timeout_consulta: int = 30
+
+    @property
+    def base_sefin(self) -> str:
+        """URL base da Sefin Nacional (host + prefixo opcional + ``/SefinNacional``)."""
+        return f"{self.host_sefin}{self.prefixo_api}{self.caminho_sefin}"
+
+    def url_sefin(self, caminho: str) -> str:
+        """URL absoluta de uma rota da Sefin (``caminho`` começa com ``/``)."""
+        return f"{self.base_sefin}{caminho}"
+
+    def url_adn(self, caminho: str) -> str:
+        """URL absoluta de uma rota do ADN Contribuintes."""
+        return f"{self.base_adn_contribuintes}{caminho}"
+
+    def url_parametrizacao(self, caminho: str) -> str:
+        """URL absoluta de uma rota de parametrização municipal (host ADN)."""
+        return f"{self.base_parametrizacao}{caminho}"
+
+    def url_consulta_publica(self, chave: str) -> str:
+        """URL da consulta pública da NFS-e, gravada no QR Code do DANFSe."""
+        return self.modelo_url_consulta_publica.format(chave=chave)
+
+    def com(self, **alteracoes) -> ConfiguracaoNfse:
+        """Cópia com campos alterados (ex.: ``cfg.com(prefixo_api="/API")``)."""
+        return replace(self, **alteracoes)
+
+
+_CONFIGURACOES_NFSE = {
+    Ambiente.PRODUCAO: ConfiguracaoNfse(
+        ambiente=Ambiente.PRODUCAO,
+        host_sefin="https://sefin.nfse.gov.br",
+        base_adn_contribuintes="https://adn.nfse.gov.br/contribuintes",
+        base_parametrizacao="https://adn.nfse.gov.br/parametrizacao",
+        modelo_url_consulta_publica="https://www.nfse.gov.br/ConsultaPublica/?chave={chave}",
+    ),
+    Ambiente.HOMOLOGACAO: ConfiguracaoNfse(
+        ambiente=Ambiente.HOMOLOGACAO,
+        host_sefin="https://sefin.producaorestrita.nfse.gov.br",
+        base_adn_contribuintes="https://adn.producaorestrita.nfse.gov.br/contribuintes",
+        base_parametrizacao="https://adn.producaorestrita.nfse.gov.br/parametrizacao",
+        modelo_url_consulta_publica=(
+            "https://www.producaorestrita.nfse.gov.br/ConsultaPublica/?chave={chave}"),
+    ),
+}
+
+
+def configuracao_nfse(ambiente: Ambiente | int, prefixo_api: str = "") -> ConfiguracaoNfse:
+    """Configuração da NFS-e Nacional para o ambiente (``HOMOLOGACAO`` = produção restrita)."""
+    configuracao = _CONFIGURACOES_NFSE[Ambiente(ambiente)]
+    return configuracao.com(prefixo_api=prefixo_api) if prefixo_api else configuracao

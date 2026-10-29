@@ -25,7 +25,7 @@ from freedfe.repositorio.arquivos import RepositorioArquivos
 from freedfe.repositorio.base import RepositorioDocumentos, ResultadoArmazenamento
 from freedfe.repositorio.filtro import Direcao, FiltroConsulta
 from freedfe.repositorio.importador import ImportadorXml
-from freedfe.servicos import configuracao_distribuicao
+from freedfe.servicos import SERVICOS_DISTRIBUICAO, configuracao_distribuicao
 from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
 from freedfe.transporte import ClienteSoap, Transporte
 
@@ -278,14 +278,15 @@ class FreeDFe:
 
     def _validar_uf(self, modelos: list[ModeloDocumento]) -> None:
         """Falha antes de qualquer chamada se algum modelo exigir UF não informada."""
-        sem_uf = [m.name for m in modelos if configuracao_distribuicao(m).exige_uf]
+        sem_uf = [m.name for m in modelos
+                  if m in SERVICOS_DISTRIBUICAO and configuracao_distribuicao(m).exige_uf]
         if sem_uf and not self.interessado.uf:
             raise ValidacaoErro(f"Informe 'uf' (código IBGE): exigida para {', '.join(sem_uf)}.")
 
     @staticmethod
     def _modelos(modelos) -> list[ModeloDocumento]:
         if modelos is None:
-            return list(ModeloDocumento)
+            return list(SERVICOS_DISTRIBUICAO)  # NFS-e tem fluxo próprio (dfe.nfse)
         if isinstance(modelos, (str, ModeloDocumento)):
             modelos = [modelos]
         return [ModeloDocumento.normalizar(m) for m in modelos]

@@ -4,6 +4,10 @@ Todas herdam de ``FreeDFeErro``, o que permite ao chamador capturar qualquer
 falha da biblioteca com um único ``except``.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 
 class FreeDFeErro(Exception):
     """Erro base da biblioteca."""
@@ -35,3 +39,51 @@ class SincronizacaoEmAndamentoErro(FreeDFeErro):
 
 class DependenciaAusenteErro(FreeDFeErro, ImportError):
     """Dependência opcional não instalada (ex.: extra ``pdf`` ou ``xlsx``)."""
+
+
+@dataclass(frozen=True)
+class ErroNfse:
+    """Erro ou alerta de negócio devolvido pela API da NFS-e Nacional (ex.: ``E0014``)."""
+
+    codigo: str
+    descricao: str = ""
+    complemento: str = ""
+
+    def __str__(self) -> str:
+        texto = f"{self.codigo}: {self.descricao}" if self.descricao else self.codigo
+        return f"{texto} ({self.complemento})" if self.complemento else texto
+
+
+class RejeicaoNfseErro(FreeDFeErro):
+    """A API da NFS-e Nacional rejeitou a requisição (HTTP 4xx com ``erros``).
+
+    ``erros`` traz os códigos e descrições devolvidos pela Sefin; ``id_dps`` identifica a
+    DPS rejeitada quando a rejeição ocorreu na emissão.
+    """
+
+    def __init__(self, erros: list[ErroNfse], status_http: int | None = None,
+                 id_dps: str | None = None):
+        self.erros = list(erros)
+        self.status_http = status_http
+        self.id_dps = id_dps
+        detalhe = "; ".join(str(erro) for erro in self.erros) or "sem detalhe"
+        super().__init__(f"NFS-e rejeitada pela Sefin (HTTP {status_http}): {detalhe}")
+
+    @property
+    def codigos(self) -> list[str]:
+        """Códigos de erro devolvidos (ex.: ``["E0712"]``)."""
+        return [erro.codigo for erro in self.erros]
+
+
+class EmissaoIncertaErro(ComunicacaoErro):
+    """Timeout ou erro 5xx na emissão, sem confirmação de que a Sefin recebeu a DPS.
+
+    A DPS pode ou não ter sido processada. **Nunca reenvie a requisição** sem antes chamar
+    ``ServicoNfse.reconciliar(id_dps)``, que consulta a Sefin pelo Id da DPS.
+    """
+
+    def __init__(self, mensagem: str, id_dps: str):
+        self.id_dps = id_dps
+        super().__init__(
+            f"{mensagem} Emissão incerta para a DPS {id_dps}: chame reconciliar() "
+            "antes de qualquer novo envio.")

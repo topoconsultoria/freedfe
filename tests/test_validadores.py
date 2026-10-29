@@ -2,8 +2,20 @@ import pytest
 
 from freedfe.excecoes import ValidacaoErro
 from freedfe.interessado import Interessado
-from freedfe.validadores import formatar_nsu, validar_chave, validar_cnpj, validar_cpf
+from freedfe.validadores import (
+    exigir_chave_nfse,
+    exigir_codigo_ibge,
+    exigir_id_dps,
+    formatar_nsu,
+    validar_chave,
+    validar_chave_nfse,
+    validar_cnpj,
+    validar_codigo_ibge,
+    validar_cpf,
+    validar_id_dps,
+)
 
+from fabrica_nfse import gerar_chave_nfse
 from fabrica_xml import CNPJ_INTERESSADO, gerar_chave
 
 
@@ -48,3 +60,40 @@ def test_interessado_exige_exatamente_um_documento():
     with pytest.raises(ValidacaoErro):
         Interessado(cnpj=CNPJ_INTERESSADO, uf="99")
     assert Interessado(cpf=" 52998224725 ").elemento_xml() == "<CPF>52998224725</CPF>"
+
+
+def test_chave_nfse_estrutura():
+    chave = gerar_chave_nfse()
+    assert len(chave) == 50 and validar_chave_nfse(chave)
+    assert validar_chave_nfse(gerar_chave_nfse(documento="12ABC34501DE35"))
+    assert validar_chave_nfse(gerar_chave_nfse(documento="52998224725"))
+    assert exigir_chave_nfse(f" {chave.lower()} ") == chave
+
+
+@pytest.mark.parametrize("chave", ["", "123", "x" * 50, gerar_chave_nfse()[:-1],
+                                   gerar_chave_nfse() + "0",
+                                   gerar_chave_nfse()[:7] + "9" + gerar_chave_nfse()[8:]])
+def test_chave_nfse_invalida(chave):
+    assert not validar_chave_nfse(chave)
+    with pytest.raises(ValidacaoErro):
+        exigir_chave_nfse(chave)
+
+
+def test_id_dps():
+    valido = "DPS" + "2927408" + "2" + CNPJ_INTERESSADO + "00001" + "000000000000001"
+    assert len(valido) == 45 and validar_id_dps(valido)
+    assert exigir_id_dps(valido.lower()) == valido
+    tipo_invalido = valido[:10] + "3" + valido[11:]
+    for invalido in ("", valido[:-1], valido.replace("DPS", "XYZ"), tipo_invalido):
+        assert not validar_id_dps(invalido)
+    with pytest.raises(ValidacaoErro):
+        exigir_id_dps("DPS123")
+
+
+def test_codigo_ibge():
+    assert validar_codigo_ibge("2927408") and validar_codigo_ibge("1100015")
+    for invalido in ("", "292740", "29274081", "9927408", "29274a8"):
+        assert not validar_codigo_ibge(invalido)
+    assert exigir_codigo_ibge("2927408") == "2927408"
+    with pytest.raises(ValidacaoErro, match="tomador"):
+        exigir_codigo_ibge("123", campo="tomador")
