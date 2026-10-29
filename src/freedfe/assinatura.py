@@ -34,6 +34,7 @@ from freedfe.excecoes import ValidacaoErro
 NS_DS = "http://www.w3.org/2000/09/xmldsig#"
 ALG_C14N = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
 ALG_EXC_C14N = "http://www.w3.org/2001/10/xml-exc-c14n#"
+ALG_EXC_C14N_COMENTARIOS = "http://www.w3.org/2001/10/xml-exc-c14n#WithComments"
 ALG_RSA_SHA1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
 ALG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 ALG_SHA1 = "http://www.w3.org/2000/09/xmldsig#sha1"
@@ -59,7 +60,14 @@ PERFIL_NFSE = PerfilAssinatura(
 PERFIL_NFSE_SHA1 = PerfilAssinatura(
     "nfse-sha1", ALG_EXC_C14N, True, ALG_RSA_SHA1, ALG_SHA1, hashes.SHA1)
 
-_PERFIS_CONHECIDOS = (PERFIL_NFE, PERFIL_NFSE, PERFIL_NFSE_SHA1)
+# A Sefin assina a NFS-e declarando ``xml-exc-c14n#WithComments`` (NFS-e real de produção,
+# 10/2026). Com referência por Id (``URI="#..."``) os comentários são descartados antes da
+# canonicalização (XMLDSig, 4.3.3.3), então o cálculo é o mesmo do perfil exclusivo. Só serve
+# para verificar: a biblioteca continua assinando com ``PERFIL_NFSE``.
+PERFIL_NFSE_SEFIN = PerfilAssinatura(
+    "nfse-sefin", ALG_EXC_C14N_COMENTARIOS, True, ALG_RSA_SHA256, ALG_SHA256, hashes.SHA256)
+
+_PERFIS_CONHECIDOS = (PERFIL_NFE, PERFIL_NFSE, PERFIL_NFSE_SHA1, PERFIL_NFSE_SEFIN)
 
 
 class AssinadorXml:
@@ -134,9 +142,13 @@ def canonicalizar(elemento: etree._Element, perfil: PerfilAssinatura) -> bytes:
     (armadilha do libxml2 2.11 que gera E0714 mesmo com a assinatura conferindo localmente).
     O perfil inclusivo mantém o comportamento da v0.1 (elemento no documento original).
     """
+    # Sem comentários: é o que os URIs declarados significam (c14n-20010315 e exc-c14n#), e
+    # referências por Id descartam comentários mesmo no "#WithComments" (XMLDSig 4.3.3.3).
+    # O lxml inclui comentários por padrão, por isso o with_comments=False explícito.
     if perfil.c14n_exclusivo:
-        return etree.tostring(copy.deepcopy(elemento), method="c14n", exclusive=True)
-    return etree.tostring(elemento, method="c14n")
+        return etree.tostring(copy.deepcopy(elemento), method="c14n", exclusive=True,
+                              with_comments=False)
+    return etree.tostring(elemento, method="c14n", with_comments=False)
 
 
 def verificar_assinatura(elemento: etree._Element,

@@ -13,6 +13,7 @@ from freedfe.assinatura import (
     NS_DS,
     PERFIL_NFE,
     PERFIL_NFSE,
+    PERFIL_NFSE_SEFIN,
     PERFIL_NFSE_SHA1,
     AssinadorXml,
     canonicalizar,
@@ -112,11 +113,20 @@ def test_namespace_nao_utilizado_fica_fora_da_forma_canonica(certificado):
     assert verificar_assinatura(raiz)
 
 
-@pytest.mark.parametrize("perfil", [PERFIL_NFSE, PERFIL_NFSE_SHA1, PERFIL_NFE])
+@pytest.mark.parametrize("perfil", [PERFIL_NFSE, PERFIL_NFSE_SHA1, PERFIL_NFE, PERFIL_NFSE_SEFIN])
 def test_verificar_assinatura_ida_e_volta(certificado, perfil):
     raiz = assinada(certificado, perfil)
     assert verificar_assinatura(raiz, perfil)
     assert verificar_assinatura(raiz)  # perfil deduzido dos algoritmos declarados
+
+
+def test_assinatura_da_sefin_with_comments_ignora_comentarios_na_referencia_por_id(certificado):
+    """A NFS-e real vem com ``xml-exc-c14n#WithComments``; com ``URI="#Id"`` comentários saem."""
+    raiz = assinada(certificado, PERFIL_NFSE_SEFIN)
+    assert raiz.find(f"{_ds('Signature')}/{_ds('SignedInfo')}/{_ds('CanonicalizationMethod')}"
+                     ).get("Algorithm").endswith("#WithComments")
+    raiz[0].append(etree.Comment(" comentário acrescentado depois da assinatura "))
+    assert verificar_assinatura(raiz)
 
 
 def test_perfil_errado_nao_verifica(certificado):
