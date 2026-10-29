@@ -5,9 +5,12 @@ Valida, sem gerar nota fiscal:
     2. convênio do município;
     3. o perfil de assinatura (Exclusive C14N + RSA-SHA256): envia uma DPS com **defeito
        proposital** que só é detectado DEPOIS da verificação da assinatura (opção de
-       ``totTrib`` incompatível com o regime, E0712). Se a Sefin devolver uma rejeição de
-       negócio (E07xx), a assinatura foi aceita. E0714, E0715, E1228, E1235, E4007 e E999 indicam
-       problema de assinatura, de schema ou de rota.
+       ``totTrib`` incompatível com o regime, E0712).
+
+Veredito (``classificar_rejeicao``), estrito: só **E0712** prova que codificação, schema e
+assinatura passaram. Outro E07xx é inconclusivo. Qualquer outro código é falha, inclusive
+E1229 (XML sem declaração UTF-8), E0714/E0715 (assinatura) e E1235 (schema). O processo sai
+com código 1 em falha ou resultado inconclusivo, para servir em CI.
 
 Variáveis de ambiente:
     SEFAZ_PFX, SEFAZ_PFX_SENHA   certificado A1 e senha (nunca por argumento de linha de comando)
@@ -44,7 +47,24 @@ from freedfe.servicos import configuracao_nfse
 from freedfe.tipos import FUSO_BRASILIA
 from freedfe.transporte import ClienteRest
 
-ERROS_DE_ASSINATURA_OU_ROTA = {"E0714", "E0715", "E1228", "E1235", "E4007", "E999"}
+CODIGO_ESPERADO = "E0712"  # defeito proposital: avaliado só depois da assinatura
+ERROS_DE_ASSINATURA = frozenset({"E0714", "E0715"})
+
+
+def classificar_rejeicao(codigos) -> str:
+    """``"ok"``, ``"inconclusivo"`` ou ``"falha"`` para os códigos devolvidos pela Sefin.
+
+    Só o defeito proposital (E0712) prova que a DPS passou por codificação, schema e
+    assinatura. Uma lista de "códigos ruins" deixaria passar rejeições novas como sucesso.
+    """
+    codigos = set(codigos)
+    if codigos & ERROS_DE_ASSINATURA:
+        return "falha"
+    if CODIGO_ESPERADO in codigos:
+        return "ok"
+    if any(codigo.startswith("E07") for codigo in codigos):
+        return "inconclusivo"
+    return "falha"
 
 
 def hoje_em_brasilia() -> dt.date:
@@ -52,23 +72,28 @@ def hoje_em_brasilia() -> dt.date:
     return dt.datetime.now(FUSO_BRASILIA).date()
 
 
-def sondar_rotas() -> str | None:
-    """Testa as duas rotas (``HEAD /dps/{id}`` de uma DPS inexistente). Devolve o prefixo útil."""
+def sondar_rotas() -> list[str]:
+    """Testa as duas rotas (``HEAD /dps/{id}`` de uma DPS inexistente).
+
+    Returns:
+        Prefixos que responderam 200 ou 404, isto é, aceitaram o certificado. Em 29/10/2026 a
+        produção restrita aceitou os dois (404 para a DPS inexistente).
+    """
     transporte = ClienteRest(CertificadoA1.de_arquivo(
         os.environ["SEFAZ_PFX"], os.environ["SEFAZ_PFX_SENHA"]))  # o mesmo mTLS da emissão
     id_fantasma = "DPS" + os.environ["FREEDFE_MUNICIPIO"] + "2" + os.environ["FREEDFE_CNPJ"] \
         + "99999" + "000000000000001"
-    util = None
+    uteis = []
     for prefixo in ("", "/API"):
         base = configuracao_nfse(Ambiente.HOMOLOGACAO, prefixo).base_sefin
         try:
             resposta = transporte.requisitar("HEAD", f"{base}/dps/{id_fantasma}", timeout=30)
             print(f"  rota {base}: HTTP {resposta.status}")
-            if resposta.status in (200, 404) and util is None:
-                util = prefixo
+            if resposta.status in (200, 404):
+                uteis.append(prefixo)
         except ComunicacaoErro as erro:
             print(f"  rota {base}: falha de rede/TLS ({erro})")
-    return util
+    return uteis
 
 
 def montar_dps_com_defeito(cnpj: str, municipio: str, inscricao_municipal: str | None) -> Dps:
@@ -88,8 +113,18 @@ def montar_dps_com_defeito(cnpj: str, municipio: str, inscricao_municipal: str |
         tot_trib=TotTrib.simples("6.00"))
 
 
-def main() -> None:
-    """Roda as três verificações e imprime o veredito."""
+MENSAGENS = {
+    "ok": "OK: E0712 confirma que codificação, schema e assinatura foram aceitos.",
+    "inconclusivo": "INCONCLUSIVO: rejeição de negócio diferente da esperada (E0712). A "
+                    "assinatura provavelmente passou, mas confira os códigos acima.",
+    "falha": "FALHA: a DPS foi recusada antes da regra de negócio esperada. E1229 indica XML "
+             "sem declaração UTF-8; E0714/E0715 indicam assinatura; E1235 indica schema. Gere a "
+             "DPS com gerar_dps_assinada() e compare com o XSD (pasta_xsd).",
+}
+
+
+def main() -> int:
+    """Roda as três verificações, imprime o veredito e devolve o código de saída."""
     cnpj, municipio = os.environ["FREEDFE_CNPJ"], os.environ["FREEDFE_MUNICIPIO"]
     with tempfile.TemporaryDirectory(prefix="freedfe_smoke_") as pasta:
         dfe = FreeDFe(os.environ["SEFAZ_PFX"], os.environ["SEFAZ_PFX_SENHA"], cnpj=cnpj,
@@ -98,21 +133,24 @@ def main() -> None:
         print(f"Certificado: {info.titular} (vence em {info.dias_para_vencer} dias)")
 
         print("1. Rotas da Sefin (mTLS):")
-        prefixo = sondar_rotas()
-        if prefixo is None:
-            print("   Nenhuma rota respondeu 200/404: confira o certificado, a cadeia (ca_bundle) "
-                  "e a rede.")
-            return
-        print(f"   Use prefixo_api={prefixo!r} em ConfiguracaoNfseLocal.")
-        if prefixo:
+        prefixos = sondar_rotas()
+        if not prefixos:
+            print("   FALHA: nenhuma rota respondeu 200/404. Confira o certificado, a cadeia "
+                  "(ca_bundle) e a rede.")
+            return 1
+        print(f"   Prefixos que aceitaram o certificado: {prefixos}. "
+              f"Usando prefixo_api={prefixos[0]!r}.")
+        if prefixos[0]:
             dfe = FreeDFe(os.environ["SEFAZ_PFX"], os.environ["SEFAZ_PFX_SENHA"], cnpj=cnpj,
                           ambiente=Ambiente.HOMOLOGACAO, pasta=pasta,
-                          config_nfse=ConfiguracaoNfseLocal(prefixo_api=prefixo))
+                          config_nfse=ConfiguracaoNfseLocal(prefixo_api=prefixos[0]))
 
         print("2. Convênio do município:")
         try:
             convenio = dfe.nfse.convenio(municipio)
-            print(f"   aderente={convenio.aderente}, ativação={convenio.data_ativacao}")
+            print(f"   aderente={convenio.aderente}, "
+                  f"emissor_nacional={convenio.aderente_emissor_nacional}, "
+                  f"ativação={convenio.data_ativacao}")
             print(f"   resposta bruta: {convenio.bruto}")
         except FreeDFeErro as erro:
             print(f"   indisponível ({erro}); a rota de parametrização pode ter mudado.")
@@ -121,18 +159,19 @@ def main() -> None:
         try:
             nota = dfe.nfse.emitir(montar_dps_com_defeito(
                 cnpj, municipio, os.environ.get("FREEDFE_IM")))
-            print(f"   ATENÇÃO: a Sefin AUTORIZOU a nota {nota.chave} (produção restrita, sem "
-                  "validade). O defeito não foi detectado; a assinatura foi aceita.")
         except RejeicaoNfseErro as erro:
-            ruins = ERROS_DE_ASSINATURA_OU_ROTA.intersection(erro.codigos)
             for item in erro.erros:
                 print(f"   {item.codigo}: {item.descricao} ({item.complemento})")
-            if ruins:
-                print(f"   FALHA: {sorted(ruins)} indica assinatura, schema ou rota. Gere a DPS "
-                      "com gerar_dps_assinada() e compare com o XSD (pasta_xsd).")
-            else:
-                print("   OK: rejeição de negócio depois da verificação da assinatura.")
+            veredito = classificar_rejeicao(erro.codigos)
+            print(f"   {MENSAGENS[veredito]}")
+            return 0 if veredito == "ok" else 1
+        except FreeDFeErro as erro:
+            print(f"   FALHA: a emissão não chegou a uma resposta de negócio ({erro}).")
+            return 1
+        print(f"   ATENÇÃO: a Sefin AUTORIZOU a nota {nota.chave} (produção restrita, sem "
+              "validade). O defeito proposital não foi detectado; reveja o teste.")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

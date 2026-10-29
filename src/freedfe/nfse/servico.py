@@ -41,6 +41,7 @@ from freedfe.excecoes import (
 from freedfe.interessado import Interessado
 from freedfe.nfse.cliente_adn import BLOQUEIO_PADRAO_SEGUNDOS, ClienteAdn, SincronizadorAdn
 from freedfe.nfse.cliente_sefin import ESPERAS_PADRAO, ClienteSefin
+from freedfe.nfse.envelope import com_declaracao_utf8
 from freedfe.nfse.estado_emissao import (
     SITUACOES_A_RECONCILIAR,
     EstadoEmissao,
@@ -74,6 +75,11 @@ logger = logging.getLogger(__name__)
 
 NS_DSIG = "http://www.w3.org/2000/09/xmldsig#"
 _NS = f"{{{NAMESPACE_NFSE}}}"
+
+
+def _serializar(raiz: etree._Element) -> bytes:
+    """XML que vai à Sefin: UTF-8 com declaração (sem ela, E1229) e sem formatação."""
+    return com_declaracao_utf8(etree.tostring(raiz, encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -169,7 +175,8 @@ class ServicoNfse:
 
         Args:
             dps: modelo tipado ``Dps`` ou XML pronto (``bytes``). XML que já traz ``Signature``
-                é enviado exatamente como está, sem reassinar.
+                é enviado como está, sem reassinar, acrescido só da declaração UTF-8 se ausente
+                (sem ela a Sefin rejeita com E1229; a assinatura não é afetada).
             leiaute: força o leiaute do montador (padrão: pelo ambiente e pela data).
             verificar_parametros: antes de enviar, confere o convênio do município (com cache);
                 município não aderente levanta ``ValidacaoErro`` (evita E0037).
@@ -328,6 +335,10 @@ class ServicoNfse:
             raise ValidacaoErro(f"O município {municipio} não tem convênio com a NFS-e "
                                 "Nacional neste ambiente (a Sefin rejeitaria com E0037).")
         avisos = []
+        if convenio.aderente_emissor_nacional is False:
+            # Semântica sem documentação oficial: avisa, mas deixa a decisão para a Sefin.
+            avisos.append(f"O município {municipio} consta como não aderente ao Emissor "
+                          "Nacional (aderenteEmissorNacional=0): a Sefin pode rejeitar a DPS.")
         if (competencia is not None and convenio.data_ativacao is not None
                 and competencia < convenio.data_ativacao):
             avisos.append(f"Competência {competencia:%d/%m/%Y} anterior à ativação do convênio "
@@ -370,7 +381,7 @@ class ServicoNfse:
             self._opcoes.folga_emissao_segundos)
         raiz = montador.cancelamento(chave, codigo_motivo, justificativa)
         AssinadorXml(certificado, PERFIL_NFSE).assinar(raiz)
-        pedido = etree.tostring(raiz, encoding="utf-8")
+        pedido = _serializar(raiz)
         tipo = TipoEventoNfse.CANCELAMENTO.value
         with self._trava():
             self._gravar_evento_enviado(chave, tipo, "pedido.xml", pedido)
@@ -467,13 +478,15 @@ class ServicoNfse:
             validador.validar(raiz)
         assinada = raiz.find(f"{{{NS_DSIG}}}Signature") is not None
         if assinada:
-            xml = bytes(dps) if not isinstance(dps, Dps) else etree.tostring(raiz)
+            # XML pronto já assinado: não reassina; só garante a declaração UTF-8 (E1229).
+            xml = com_declaracao_utf8(bytes(dps)) if not isinstance(dps, Dps) \
+                else _serializar(raiz)
             if not verificar_assinatura(raiz):
                 logger.warning("A assinatura da DPS %s não confere com os perfis conhecidos.",
                                identificador)
         else:
             AssinadorXml(certificado, PERFIL_NFSE).assinar(raiz)
-            xml = etree.tostring(raiz, encoding="utf-8")
+            xml = _serializar(raiz)
         return _DpsPreparada(
             id_dps=identificador, serie=int(identificador[25:30]), numero=int(identificador[30:45]),
             xml=xml, mes=self._mes(inf), municipio=identificador[3:10],

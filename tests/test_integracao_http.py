@@ -7,6 +7,7 @@ cabeçalhos, timeouts e túnel de proxy são exercitados de verdade, sem a rede 
 
 import base64
 import datetime as dt
+import json
 import os
 import ssl
 import time
@@ -23,7 +24,12 @@ from freedfe.nfse.servico import ConfiguracaoNfseLocal
 from freedfe.nfse.validador_xsd import ValidadorXsd
 from freedfe.transporte import ClienteRest, ClienteSoap
 from freedfe.validadores import validar_chave_nfse
-from servidor_sefin_falso import CAMINHO_SEFIN, ProxyConnectFalso, ServidorSefinFalso
+from servidor_sefin_falso import (
+    CAMINHO_SEFIN,
+    CONVENIO_ADERENTE,
+    ProxyConnectFalso,
+    ServidorSefinFalso,
+)
 
 from conftest import SENHA_TESTE, RelogioFalso, gerar_pfx
 from fabrica_nfse import CNPJ_PRESTADOR, DATA_EMISSAO, MUNICIPIO, dps_minima
@@ -200,7 +206,7 @@ def test_fachada_aceita_proxy_para_os_dois_transportes(tmp_path, certificado, se
                       pasta=tmp_path, ca_bundle=servidor.ca_bundle, proxy=proxy.url,
                       config_nfse=ConfiguracaoNfseLocal(configuracao_api=servidor.configuracao,
                                                         esperas_consulta=()))
-        servidor.convenios[MUNICIPIO] = {"aderente_ambiente_nacional": True}
+        servidor.convenios[MUNICIPIO] = CONVENIO_ADERENTE
         assert dfe.nfse.convenio(MUNICIPIO).aderente is True
     assert len(proxy.conexoes) == 1
 
@@ -302,11 +308,30 @@ def test_sincronizacao_adn_traz_notas_e_eventos_e_e_incremental(
 
 
 def test_convenio_e_cache_ponta_a_ponta(dfe, servidor):
-    servidor.convenios[MUNICIPIO] = {"aderente_ambiente_nacional": True,
-                                     "dataAtivacao": "2026-01-01"}
-    assert dfe.nfse.convenio(MUNICIPIO).aderente is True
+    servidor.convenios[MUNICIPIO] = CONVENIO_ADERENTE  # forma observada na produção restrita
+    convenio = dfe.nfse.convenio(MUNICIPIO)
+    assert convenio.aderente is True and convenio.aderente_emissor_nacional is True
     dfe.nfse.convenio(MUNICIPIO)  # segundo acesso vem do cache em disco
     assert len(servidor.chamadas("GET", "/adn/parametrizacao")) == 1
+    assert dfe.nfse.emitir(dps_minima(numero=21), verificar_parametros=True).chave
+
+
+def test_dps_sem_declaracao_utf8_e_recusada_com_e1229_como_na_sefin_real(
+        certificado, servidor, relogio):
+    """Regressão do defeito achado na produção restrita: o XML precisa declarar UTF-8."""
+    from lxml import etree
+
+    from freedfe.assinatura import PERFIL_NFSE, AssinadorXml
+    from freedfe.nfse.envelope import comprimir_b64
+    from freedfe.nfse.montador_dps import MontadorDpsNt009
+
+    raiz = MontadorDpsNt009(Ambiente.HOMOLOGACAO, relogio).montar(dps_minima(numero=22))
+    AssinadorXml(certificado, PERFIL_NFSE).assinar(raiz)
+    corpo = json.dumps(
+        {"dpsXmlGZipB64": comprimir_b64(etree.tostring(raiz, encoding="utf-8"))}).encode()
+    resposta = cliente(certificado, servidor).requisitar(
+        "POST", url(servidor, f"{CAMINHO_SEFIN}/nfse"), corpo)
+    assert resposta.status == 400 and b"E1229" in resposta.corpo and servidor.nfses == {}
 
 
 def test_danfse_da_nota_emitida_tem_qr_para_a_consulta_publica(dfe, servidor, tmp_path):

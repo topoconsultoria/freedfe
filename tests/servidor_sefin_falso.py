@@ -8,14 +8,16 @@ timeouts, túnel de proxy e o fluxo completo de emissão, reconciliação, cance
 Limites (o servidor NÃO é a Sefin): os nomes dos campos JSON de resposta seguem as hipóteses
 documentadas na biblioteca (as mesmas de ``fabrica_nfse``) e a numeração/regras de negócio
 são mínimas. O que ele valida de verdade é o que o cliente envia: JSON com o campo exato,
-GZip+Base64, XML bem formado, ``Signature`` irmã de ``infDPS`` com a assinatura criptográfica
-conferida (Exclusive C14N + RSA-SHA256), ``Id`` da DPS com 45 posições e ``tpAmb``.
+GZip+Base64, declaração UTF-8 (E1229, como a Sefin real), XML bem formado, ``Signature`` irmã
+de ``infDPS`` com a assinatura criptográfica conferida (Exclusive C14N + RSA-SHA256), ``Id`` da
+DPS com 45 posições e ``tpAmb``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import select
 import socket
 import socketserver
@@ -56,6 +58,11 @@ CAMINHO_SEFIN = "/SefinNacional"
 CAMINHO_ADN = "/adn/contribuintes"
 CAMINHO_PARAMETRIZACAO = "/adn/parametrizacao"
 _NS = f"{{{NAMESPACE_NFSE}}}"
+# A Sefin real recusou com E1229 um XML ASCII sem declaração (produção restrita, 29/10/2026).
+_DECLARACAO_UTF8 = re.compile(rb"""<\?xml\s[^>]*encoding\s*=\s*["']utf-?8["']""", re.IGNORECASE)
+# Forma do convênio observada na mesma data: indicadores 0/1 dentro de parametrosConvenio.
+CONVENIO_ADERENTE = {"parametrosConvenio": {"aderenteAmbienteNacional": 1,
+                                            "aderenteEmissorNacional": 1}}
 
 
 @dataclass
@@ -198,6 +205,8 @@ class ServidorSefinFalso:
     # -- regras de negócio mínimas -----------------------------------------
 
     def emitir(self, dps_bytes: bytes) -> RespostaHttp:
+        if not _DECLARACAO_UTF8.match(dps_bytes):
+            return resposta_erro("E1229", "XML não está utilizando codificação UTF8.")
         try:
             raiz = etree.fromstring(dps_bytes, etree.XMLParser(resolve_entities=False))
         except etree.XMLSyntaxError as erro:
@@ -230,6 +239,8 @@ class ServidorSefinFalso:
         return resposta_emissao(xml, chave)
 
     def registrar_evento(self, chave: str, pedido_bytes: bytes) -> RespostaHttp:
+        if not _DECLARACAO_UTF8.match(pedido_bytes):
+            return resposta_erro("E1229", "XML não está utilizando codificação UTF8.")
         raiz = etree.fromstring(pedido_bytes, etree.XMLParser(resolve_entities=False))
         if raiz.tag != f"{_NS}pedRegEvento":
             return resposta_erro("E0002", "Raiz pedRegEvento ausente")

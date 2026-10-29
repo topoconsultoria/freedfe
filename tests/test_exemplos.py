@@ -32,3 +32,16 @@ def test_dps_dos_exemplos_sao_montadas_nos_dois_leiautes(nome, fabrica, leiaute)
     montador = montador_para(leiaute, Ambiente.HOMOLOGACAO, relogio=relogio)
     xml = montador.serializar(__import__("dataclasses").replace(dps, numero=1))
     assert xml.startswith(b"<DPS ") and b"<infDPS Id=" in xml
+
+
+@pytest.mark.skipif(not PASTA.exists(), reason="pasta de exemplos ausente (instalação do pacote)")
+@pytest.mark.parametrize("codigos, veredito", [
+    (["E0712"], "ok"),
+    (["E0712", "E0160"], "ok"),
+    (["E0710"], "inconclusivo"),
+    (["E1229"], "falha"),  # XML sem declaração UTF-8: antes passava como "OK"
+    (["E0714"], "falha"), (["E0715"], "falha"), (["E0712", "E0714"], "falha"),
+    (["E1235"], "falha"), (["E0014"], "falha"), ([], "falha"),
+])
+def test_veredito_do_smoke_so_aceita_o_defeito_proposital(codigos, veredito):
+    assert carregar("nfse_smoke_producao_restrita").classificar_rejeicao(codigos) == veredito

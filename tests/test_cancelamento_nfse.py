@@ -172,6 +172,10 @@ def test_cancelamento_feliz(dfe, rest, tmp_path):
     pasta = tmp_path / "homologacao" / CNPJ_PRESTADOR / "nfse" / "eventos_enviados"
     nomes = sorted(p.name.split("-", 1)[1] for p in pasta.rglob("*") if p.is_file())
     assert nomes == ["101101-pedido.xml", "101101-resposta.json"]
+    # Sem a declaração UTF-8 a Sefin rejeita com E1229; a evidência é o que foi enviado.
+    bruto = descomprimir_b64(json.loads(corpo)["pedidoRegistroEventoXmlGZipB64"])
+    assert bruto.startswith(b'<?xml version="1.0" encoding="UTF-8"?><pedRegEvento ')
+    assert next(pasta.rglob("*-pedido.xml")).read_bytes() == bruto
 
 
 def test_resposta_sem_xml_busca_o_evento_na_lista(dfe, rest):

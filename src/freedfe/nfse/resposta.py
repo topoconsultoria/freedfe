@@ -40,6 +40,7 @@ __all__ = [
     "ler_chave_do_xml",
     "ler_json",
     "levantar_rejeicao",
+    "procurar",
 ]
 
 # Status em que a Sefin pode ou não ter processado a requisição: nunca reenviar sem consultar.
@@ -54,6 +55,27 @@ def campo(dados: Any, *nomes: str, padrao: Any = None) -> Any:
     for nome in nomes:
         if nome.lower() in minusculas:
             return minusculas[nome.lower()]
+    return padrao
+
+
+_AUSENTE = object()
+
+
+def procurar(dados: Any, *nomes: str, profundidade: int = 3, padrao: Any = None) -> Any:
+    """Como :func:`campo`, mas também em objetos aninhados, do nível mais raso ao mais fundo.
+
+    Útil quando a API embrulha os dados (ex.: o convênio vem dentro de ``parametrosConvenio``).
+    Em cada nível vale a ordem de ``nomes``; listas não são percorridas.
+    """
+    nivel = [dados] if isinstance(dados, dict) else []
+    for _ in range(profundidade + 1):
+        for objeto in nivel:
+            valor = campo(objeto, *nomes, padrao=_AUSENTE)
+            if valor is not _AUSENTE:
+                return valor
+        nivel = [v for objeto in nivel for v in objeto.values() if isinstance(v, dict)]
+        if not nivel:
+            break
     return padrao
 
 

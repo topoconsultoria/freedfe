@@ -3,8 +3,9 @@
 Etapas 0 a 12 **implementadas** na branch `claude/plano-nfse-nacional`, um commit por etapa,
 com `pytest` e `ruff` verdes. Depois delas, uma rodada de verificação contra os artefatos oficiais
 (pacote XSD de produção e pacote PRODREST da NT 009, NT 008, manuais) e contra os servidores reais
-sem certificado. Resultado dos testes: 496 passam e 25 ficam ignorados por padrão; com os dois
-pacotes XSD são 511; com `FREEDFE_TESTE_REDE=1` também, 521 (os 10 de rede real).
+sem certificado, e as correções do primeiro smoke test real com A1. Resultado dos testes: 521
+passam e 25 ficam ignorados por padrão; com os dois pacotes XSD são 536; com
+`FREEDFE_TESTE_REDE=1` também, 546 (os 10 de rede real).
 O restante deste documento é o plano aprovado, mantido como foi escrito. Os desvios abaixo
 vieram de conferir o plano contra os **XSD oficiais** (NT 004 v2.0 e NT 009 v1.01), os exemplos
 oficiais, a NT 008 e o relatório técnico.
@@ -29,6 +30,9 @@ oficiais, a NT 008 e o relatório técnico.
 | Leiaute do DANFSe | conteúdo do XML, campos a conferir | blocos, rótulos e regras do Anexo I da NT 008 | NT 008 v1.02 |
 | Proxy | não previsto | `proxy="auto"` (HTTPS_PROXY/NO_PROXY) ou URL; túnel CONNECT | Necessário em redes corporativas e neste ambiente |
 | Testes de rede | só transporte falso | servidor mTLS local, proxy CONNECT e testes opt-in nos servidores reais | Cobrir handshake, timeout e fluxo completo em sockets |
+| Declaração XML | `xml_declaration=False`, como no relatório | `<?xml version="1.0" encoding="UTF-8"?>` em todo XML enviado | A Sefin real recusou com E1229 a DPS sem declaração |
+| Convênio | campos na raiz | busca também em `parametrosConvenio`; `aderente_emissor_nacional` | Resposta real da produção restrita |
+| Veredito do smoke | lista de códigos ruins | só E0712 é sucesso; saída com código 1 nos demais casos | O E1229 passou como "OK" no primeiro teste real |
 
 Adições além do plano: `ConfiguracaoNfseLocal.pausa`, `esperas_consulta`, `bloqueio_adn_segundos`,
 `RepositorioDocumentos.obter_atual`, `ClienteParametros(rota_legada=True)` e
@@ -41,10 +45,14 @@ QR Code e leiaute do DANFSe (NT 008) e rotas dos manuais. Observado sem certific
 monta `/SefinNacional`; produção restrita monta `/SefinNacional` e `/API/SefinNacional`; ADN e
 parametrização recusam certificado não ICP-Brasil no handshake.
 
-1. Qual prefixo a produção restrita atende de fato e se os dois respondem as mesmas rotas.
-2. Status de `HEAD /dps/{id}`, nomes dos campos JSON de resposta, de evento e do ADN, e
-   semântica do NSU do ADN.
-3. Formato da resposta de convênio e dos demais parâmetros municipais.
+Resolvido com o primeiro smoke test real, com A1, em 29/10/2026: os dois prefixos da produção
+restrita aceitam o certificado; `HEAD /dps/{id}` de DPS inexistente devolve 404; a forma da
+resposta de convênio; a exigência da declaração UTF-8 (E1229).
+
+1. Aceitação da assinatura pela Sefin: o primeiro teste parou no E1229, antes da assinatura.
+2. Status 200 de `HEAD /dps/{id}` para DPS existente, nomes dos campos JSON de resposta, de evento
+   e do ADN, e semântica do NSU do ADN.
+3. Semântica de `aderenteEmissorNacional` e nome do campo da data de ativação do convênio.
 4. Dígito verificador da chave de 50 posições (validação estrutural apenas).
 
 O script `examples/nfse_smoke_producao_restrita.py` cobre rota, convênio e assinatura com o A1.

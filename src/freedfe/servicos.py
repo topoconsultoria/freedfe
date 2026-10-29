@@ -147,12 +147,15 @@ class ConfiguracaoNfse:
         - Sefin de **produção** só monta ``/SefinNacional`` (403 sem ICP-Brasil); o caminho
           ``/API/SefinNacional`` devolve 404. Em produção use ``prefixo_api=""``.
         - Sefin de **produção restrita** monta ``/SefinNacional`` e ``/API/SefinNacional`` (ambos
-          403 sem ICP-Brasil). Sem o A1 não dá para saber se atendem as mesmas rotas.
+          403 sem ICP-Brasil).
         - ADN e parametrização recusam certificado cliente não ICP-Brasil já no handshake TLS.
 
-    HIPÓTESES a confirmar (smoke test na produção restrita, com o A1):
-        - ``prefixo_api``: a página oficial indica ``/API/SefinNacional`` na produção restrita,
-          mas relatos de desenvolvedores apontam ``/SefinNacional``. Padrão: sem prefixo.
+    Observado em 29/10/2026 **com o A1 real** na produção restrita (smoke test):
+        - os dois prefixos aceitam o certificado e devolvem 404 para ``HEAD /dps/{id}`` de DPS
+          inexistente; o padrão sem prefixo está correto;
+        - o convênio responde em ``base_parametrizacao`` (host ADN).
+
+    HIPÓTESE a confirmar:
         - ``modelo_url_consulta_publica``: a NT 008 v1.02 (item 2.4.3) fixa
           ``https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave=<chave>``. O endereço da
           produção restrita usa o mesmo caminho no host ``www.producaorestrita.nfse.gov.br``

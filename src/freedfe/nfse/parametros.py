@@ -6,10 +6,12 @@ Rotas (relatório técnico, out/2026), sob ``base_parametrizacao`` (host ADN)::
     GET /{codMun}/{codigoServico}       alíquota, regimes especiais, deduções/reduções
     GET /{codMun}/{CPF|CNPJ}            retenções e benefícios do contribuinte
 
-HIPÓTESE: o manual v1.2 ainda descreve as rotas legadas ``/parametros_municipais/...`` na base
-da Sefin (``rota_legada=True``); só a de convênio foi confirmada na nova base por relatos de
-desenvolvedores. Os nomes dos campos da resposta também não são oficiais: a leitura é tolerante
-e o retorno bruto (``dict``) fica sempre disponível.
+A rota de convênio na nova base foi confirmada com o A1 real na produção restrita em
+29/10/2026; a resposta traz os indicadores dentro de ``parametrosConvenio`` (ver ``Convenio``).
+HIPÓTESE: o manual v1.2 ainda descreve as rotas legadas ``/parametros_municipais/...`` na base da
+Sefin (``rota_legada=True``) e as rotas de serviço e contribuinte não foram testadas na nova base.
+Os nomes dos campos não são oficiais: a leitura é tolerante, procura em objetos aninhados e o
+retorno bruto (``dict``) fica sempre disponível.
 
 O cache (TTL de 24 h) evita consultar a Sefin a cada emissão e mantém a emissão viável com
 internet instável: se a consulta falhar, o último valor, mesmo vencido, é usado com aviso.
@@ -29,7 +31,7 @@ from typing import Any
 from freedfe.distribuicao.estado import Relogio, relogio_utc
 from freedfe.excecoes import ComunicacaoErro, RespostaInvalidaErro, ValidacaoErro
 from freedfe.nfse.cliente_base import ClienteNfseBase
-from freedfe.nfse.resposta import campo, ler_json, levantar_rejeicao
+from freedfe.nfse.resposta import ler_json, levantar_rejeicao, procurar
 from freedfe.validadores import exigir_codigo_ibge, validar_cnpj, validar_cpf
 
 logger = logging.getLogger(__name__)
@@ -43,24 +45,35 @@ _FALSO = {"false", "0", "n", "nao", "não", "no"}
 class Convenio:
     """Convênio do município com a NFS-e Nacional.
 
-    ``aderente`` é ``None`` quando a resposta não permite concluir (campo desconhecido): a
-    verificação pré-emissão só bloqueia quando a aderência é explicitamente negativa.
+    A resposta real (produção restrita, 29/10/2026) traz os indicadores dentro de
+    ``parametrosConvenio``, como inteiros 0/1: ``aderenteAmbienteNacional`` e
+    ``aderenteEmissorNacional``. A semântica de cada um não tem documentação oficial.
+
+    Attributes:
+        aderente: ``aderenteAmbienteNacional``. ``None`` quando a resposta não permite concluir:
+            a verificação pré-emissão só bloqueia quando a aderência é explicitamente negativa.
+        aderente_emissor_nacional: ``aderenteEmissorNacional`` (``None`` se ausente).
+        data_ativacao: data de ativação do convênio, quando a resposta a traz.
+        bruto: resposta completa, para consultar campos não interpretados.
     """
 
     codigo_municipio: str
     aderente: bool | None
     data_ativacao: dt.date | None
     bruto: dict[str, Any] = field(default_factory=dict, compare=False)
+    aderente_emissor_nacional: bool | None = None
 
     @classmethod
     def de_dict(cls, codigo_municipio: str, dados: dict[str, Any]) -> Convenio:
-        """Interpreta a resposta de forma tolerante a nomes e formatos."""
-        aderente = _como_bool(campo(
-            dados, "aderente_ambiente_nacional", "aderenteAmbienteNacional", "aderente",
+        """Interpreta a resposta de forma tolerante a nomes, formatos e aninhamento."""
+        aderente = _como_bool(procurar(
+            dados, "aderenteAmbienteNacional", "aderente_ambiente_nacional", "aderente",
             "aderenteAN", "convenioAtivo"))
-        ativacao = _como_data(campo(
-            dados, "data_ativacao", "dataAtivacao", "dtAtivacao", "dataInicio", "dataAdesao"))
-        return cls(codigo_municipio, aderente, ativacao, dados)
+        emissor = _como_bool(procurar(
+            dados, "aderenteEmissorNacional", "aderente_emissor_nacional"))
+        ativacao = _como_data(procurar(
+            dados, "dataAtivacao", "data_ativacao", "dtAtivacao", "dataInicio", "dataAdesao"))
+        return cls(codigo_municipio, aderente, ativacao, dados, emissor)
 
 
 def _como_bool(valor: Any) -> bool | None:

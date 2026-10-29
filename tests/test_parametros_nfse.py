@@ -14,6 +14,7 @@ from freedfe.nfse.parametros import (
     Convenio,
     interpretar_parametros,
 )
+from freedfe.nfse.resposta import procurar
 from freedfe.nfse.servico import ConfiguracaoNfseLocal
 from freedfe.servicos import configuracao_nfse
 from freedfe.transporte import RespostaHttp
@@ -97,6 +98,29 @@ def test_convenio_tolerante_a_nomes_e_formatos(dados, aderente, ativacao):
     convenio = Convenio.de_dict(MUNICIPIO, dados)
     assert convenio.aderente is aderente and convenio.data_ativacao == ativacao
     assert convenio.bruto == dados
+
+
+# Forma observada na produção restrita em 29/10/2026: indicadores 0/1 dentro de
+# parametrosConvenio.
+CONVENIO_REAL = {"parametrosConvenio": {"aderenteAmbienteNacional": 1,
+                                        "aderenteEmissorNacional": 1}}
+
+
+def test_convenio_real_vem_aninhado_em_parametros_convenio():
+    convenio = Convenio.de_dict(MUNICIPIO, CONVENIO_REAL)
+    assert convenio.aderente is True and convenio.aderente_emissor_nacional is True
+    nao = Convenio.de_dict(MUNICIPIO, {"parametrosConvenio": {
+        "aderenteAmbienteNacional": 0, "aderenteEmissorNacional": 0}})
+    assert nao.aderente is False and nao.aderente_emissor_nacional is False
+
+
+def test_procurar_prefere_o_nivel_mais_raso_e_nao_entra_em_listas():
+    dados = {"a": {"x": 2, "b": {"x": 3}}, "x": 1, "lista": [{"y": 9}]}
+    assert procurar(dados, "X") == 1
+    assert procurar({"a": {"b": {"x": 3}}, "c": {"x": 2}}, "x") == 2
+    assert procurar(dados, "y") is None and procurar(dados, "y", padrao=0) == 0
+    assert procurar({"a": {"b": {"c": {"d": {"x": 1}}}}}, "x") is None  # além da profundidade
+    assert procurar("texto", "x") is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +242,19 @@ def test_verificar_pre_emissao_avisa_competencia_anterior_a_ativacao(dfe, rest, 
 def test_resposta_desconhecida_nao_bloqueia(dfe, rest):
     rest.respostas = [json_ok({"formato": "novo"})]
     assert dfe.nfse.verificar_pre_emissao(dps_minima()) == []
+
+
+def test_convenio_real_aderente_libera_a_emissao(dfe, rest):
+    rest.respostas = [json_ok(CONVENIO_REAL)]
+    assert dfe.nfse.verificar_pre_emissao(dps_minima()) == []
+
+
+def test_nao_aderente_ao_emissor_nacional_so_avisa(dfe, rest, caplog):
+    rest.respostas = [json_ok({"parametrosConvenio": {"aderenteAmbienteNacional": 1,
+                                                      "aderenteEmissorNacional": 0}})]
+    avisos = dfe.nfse.verificar_pre_emissao(dps_minima())
+    assert len(avisos) == 1 and "aderenteEmissorNacional=0" in avisos[0]
+    assert "Emissor Nacional" in caplog.text
 
 
 def test_emitir_com_verificacao_bloqueia_antes_de_reservar_e_enviar(dfe, rest):

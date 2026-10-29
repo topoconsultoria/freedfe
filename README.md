@@ -273,14 +273,28 @@ do ADN, leiaute e QR Code do DANFSe (NT 008 v1.02). **Observado** nos servidores
   recusam o certificado já no handshake TLS (reset de conexão ou `bad record mac`).
 - A Consulta Pública do QR Code (`/ConsultaPublica/?tpc=1&chave=`) existe nos dois ambientes.
 
+**Observado** na produção restrita **com certificado A1 real** (smoke test, 29/10/2026):
+
+- mTLS aceito. `HEAD /dps/{id}` de DPS inexistente devolve **404** em `/SefinNacional` e em
+  `/API/SefinNacional`: os dois prefixos atendem, e o padrão sem prefixo está correto.
+- O convênio responde em `adn.../parametrizacao/{codMun}/convenio`, com os indicadores dentro de
+  `parametrosConvenio`, como inteiros 0/1: `aderenteAmbienteNacional` e `aderenteEmissorNacional`.
+- **Todo XML enviado à Sefin precisa da declaração UTF-8.** Uma DPS ASCII, válida como UTF-8, mas
+  sem `<?xml version="1.0" encoding="UTF-8"?>`, foi recusada com **E1229** ("XML não está utilizando
+  codificação UTF8") antes da assinatura. A biblioteca acrescenta a declaração na DPS e no pedido de
+  evento. Num XML pronto já assinado, ela só prefixa a declaração, o que não invalida a assinatura,
+  e recusa localmente outra codificação declarada.
+
 **Ainda não confirmado** (só com o A1; teste em produção restrita antes de produção; tudo é
 configurável ou tolerante):
 
-1. Qual prefixo a produção restrita atende de fato (`ConfiguracaoNfseLocal(prefixo_api="/API")`).
-2. Status de `HEAD /dps/{id}` (200/404), nomes dos campos JSON de resposta (emissão, evento, ADN)
-   e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as duas).
-3. Formato da resposta de convênio e dos demais parâmetros municipais (tratada como dicionário
-   tolerante a nomes).
+1. Aceitação da assinatura pela Sefin: o primeiro teste real parou no E1229. O smoke test agora
+   só dá "OK" com a rejeição de negócio esperada, E0712.
+2. Status de `HEAD /dps/{id}` para DPS existente (200), nomes dos campos JSON de resposta (emissão,
+   evento, ADN) e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as
+   duas).
+3. Semântica exata de `aderenteEmissorNacional`, que gera só aviso, e o nome do campo da data de
+   ativação do convênio. Os demais parâmetros municipais são tratados como dicionário tolerante.
 4. Algoritmo do dígito verificador da chave de 50 posições (validação só estrutural).
 5. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
    biblioteca devolve o código de rejeição.
@@ -295,7 +309,8 @@ logomarca textual, posições calculadas pelo fluxo da página e sem canhoto. No
 existem no XML para o emitente; para tomador, destinatário e intermediário aparece o código IBGE.
 
 `examples/nfse_smoke_producao_restrita.py` valida mTLS, rota, convênio e o perfil de assinatura
-(Exclusive C14N + RSA-SHA256) na produção restrita **sem gerar nota**.
+(Exclusive C14N + RSA-SHA256) na produção restrita **sem gerar nota**. O veredito é estrito: só a
+rejeição esperada E0712 conta como sucesso, e qualquer outro resultado sai com código 1.
 
 ## Estrutura de dados local
 

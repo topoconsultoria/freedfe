@@ -17,7 +17,7 @@ from freedfe.excecoes import (
     SincronizacaoEmAndamentoErro,
     ValidacaoErro,
 )
-from freedfe.nfse.envelope import descomprimir_b64
+from freedfe.nfse.envelope import DECLARACAO_UTF8, descomprimir_b64
 from freedfe.nfse.estado_emissao import SituacaoEmissao
 from freedfe.nfse.leiaute import NAMESPACE_NFSE, VersaoLeiaute
 from freedfe.nfse.montador_dps import MontadorDps
@@ -318,6 +318,31 @@ def test_xml_ja_assinado_e_enviado_exatamente_como_esta(dfe, rest, relogio):
     rest.respostas = [resposta_emissao(nfse, chave)]
     dfe.nfse.emitir(assinada)
     assert dps_enviada(rest) == assinada
+
+
+def test_dps_vai_com_declaracao_utf8_para_evitar_e1229(dfe, rest):
+    chave, nfse = nfse_xml(dps_minima())
+    rest.respostas = [resposta_emissao(nfse, chave)]
+    dfe.nfse.emitir(dps_minima())
+    assert dps_enviada(rest).startswith(DECLARACAO_UTF8 + b"<DPS ")
+    assert dfe.nfse.gerar_dps_assinada(dps_minima()).startswith(DECLARACAO_UTF8)
+
+
+def test_xml_assinado_sem_declaracao_recebe_so_o_prefixo_sem_reassinar(dfe, rest):
+    sem_declaracao = dfe.nfse.gerar_dps_assinada(dps_minima())[len(DECLARACAO_UTF8):]
+    assert sem_declaracao.startswith(b"<DPS ")
+    chave, nfse = nfse_xml(dps_minima())
+    rest.respostas = [resposta_emissao(nfse, chave)]
+    dfe.nfse.emitir(sem_declaracao)
+    assert dps_enviada(rest) == DECLARACAO_UTF8 + sem_declaracao
+
+
+def test_xml_pronto_com_outra_codificacao_e_recusado_antes_do_envio(dfe, rest):
+    assinada = dfe.nfse.gerar_dps_assinada(dps_minima())
+    latin1 = b'<?xml version="1.0" encoding="ISO-8859-1"?>' + assinada[len(DECLARACAO_UTF8):]
+    with pytest.raises(ValidacaoErro, match="E1229"):
+        dfe.nfse.emitir(latin1)
+    assert rest.enviados == [] and dfe.nfse.emissoes() == []  # nada reservado
 
 
 def test_tpamb_divergente_falha_antes_de_qualquer_chamada(dfe, rest, relogio):
