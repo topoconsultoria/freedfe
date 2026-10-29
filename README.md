@@ -285,6 +285,18 @@ do ADN, leiaute e QR Code do DANFSe (NT 008 v1.02). **Observado** nos servidores
   evento. Num XML pronto já assinado, ela só prefixa a declaração, o que não invalida a assinatura,
   e recusa localmente outra codificação declarada.
 
+**Observado na produção com o A1 real**, só leitura, com uma nota já emitida (29/10/2026,
+`examples/nfse_sonda_producao_leitura.py`):
+
+- `GET /nfse/{chave}` devolve `tipoAmbiente`, `versaoAplicativo`, `dataHoraProcessamento`,
+  `chaveAcesso` e `nfseXmlGZipB64`, os nomes que a biblioteca já usava.
+- `HEAD /dps/{id}` devolve **200** para DPS existente; `GET /dps/{id}` traz `chaveAcesso`.
+- A Sefin assina a NFS-e declarando `xml-exc-c14n#WithComments`; a biblioteca verifica.
+- O ADN devolve `StatusProcessamento`, `LoteDFe` (até 50 itens com `NSU`, `ChaveAcesso`,
+  `TipoDocumento`, `ArquivoXml`, `DataHoraGeracao`), `Alertas`, `Erros`, `TipoAmbiente` (texto)
+  e outros metadados. O NSU pedido é **exclusivo**: `/DFe/50` devolve a partir do 51, que é como
+  a biblioteca já avança.
+
 **Ainda não confirmado** (só com o A1; teste em produção restrita antes de produção; tudo é
 configurável ou tolerante):
 
@@ -293,17 +305,15 @@ configurável ou tolerante):
    regra de cadastro do prestador (E0084 sem IM, E0120 com IM: o CNC NFS-e da produção restrita
    não tem o cadastro complementar dele). Codificação (E1229) e schema também passaram. Falta
    uma emissão autorizada, que depende desse cadastro no município.
-2. Status de `HEAD /dps/{id}` para DPS existente (200), nomes dos campos JSON de resposta (emissão,
-   evento, ADN) e semântica do NSU do ADN (a biblioteca pede o último NSU recebido, o que tolera as
-   duas).
-3. Semântica exata de `aderenteEmissorNacional`, que gera só aviso, e o nome do campo da data de
+2. Semântica exata de `aderenteEmissorNacional`, que gera só aviso, e o nome do campo da data de
    ativação do convênio. Os demais parâmetros municipais são tratados como dicionário tolerante.
-4. Algoritmo do dígito verificador da chave de 50 posições (validação só estrutural).
-5. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
+3. Algoritmo do dígito verificador da chave de 50 posições: o módulo 11 conferiu na única
+   nota real testada, mas a validação continua só estrutural.
+4. Regras municipais de cancelamento (prazo, análise fiscal, E0824) só a Sefin aplica; a
    biblioteca devolve o código de rejeição.
-6. Não há contingência offline documentada: em indisponibilidade, reenvie depois (a competência
+5. Não há contingência offline documentada: em indisponibilidade, reenvie depois (a competência
    permite emissão tardia; confirme as regras com o município).
-7. Só certificado A1. O certificado da conexão deve ser do emitente (E0718).
+6. Só certificado A1. O certificado da conexão deve ser do emitente (E0718).
 
 **DANFSe.** Segue a NT 008 v1.02 (DANFSe v2.0): blocos e rótulos do Anexo I, traço nos campos
 vazios, blocos suprimidos só com a mensagem oficial, QR Code de 25 mm com a legenda oficial e

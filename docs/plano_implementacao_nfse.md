@@ -49,12 +49,15 @@ Resolvido com o primeiro smoke test real, com A1, em 29/10/2026: os dois prefixo
 restrita aceitam o certificado; `HEAD /dps/{id}` de DPS inexistente devolve 404; a forma da
 resposta de convênio; a exigência da declaração UTF-8 (E1229).
 
+Resolvido com a sonda de leitura em produção, com A1 e uma nota real: campos JSON de
+`GET /nfse/{chave}` e `GET /dps/{id}`, `HEAD /dps/{id}` 200 para DPS existente, formato do lote do
+ADN e NSU exclusivo, assinatura da Sefin com `#WithComments`.
+
 1. Emissão autorizada. A assinatura foi aceita por contraste (adulterada: E0714; correta: E0120
    de cadastro); falta o cadastro complementar do prestador no CNC da produção restrita.
-2. Status 200 de `HEAD /dps/{id}` para DPS existente, nomes dos campos JSON de resposta, de evento
-   e do ADN, e semântica do NSU do ADN.
+2. Nomes dos campos JSON da resposta de **evento** (cancelamento).
 3. Semântica de `aderenteEmissorNacional` e nome do campo da data de ativação do convênio.
-4. Dígito verificador da chave de 50 posições (validação estrutural apenas).
+4. Dígito verificador da chave de 50 posições: o módulo 11 conferiu em uma nota real.
 
 O script `examples/nfse_smoke_producao_restrita.py` cobre rota, convênio e assinatura com o A1.
 

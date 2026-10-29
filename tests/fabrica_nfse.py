@@ -333,14 +333,24 @@ def resposta_adn(itens: list[tuple[int, bytes]], status: str = "DOCUMENTOS_LOCAL
         conteudo = comprimir_b64(xml)
         if base64_duplo:
             conteudo = base64.b64encode(conteudo.encode()).decode()
-        lote.append({"NSU": nsu, "ArquivoXml": conteudo, "TipoDocumento": "NFSE",
+        lote.append({"NSU": nsu, "ChaveAcesso": _chave_do_xml(xml), "ArquivoXml": conteudo,
+                     "TipoDocumento": "NFSE",
                      "DataHoraGeracao": "2026-10-29T10:00:00"})
-    corpo = {"StatusProcessamento": status, "LoteDFe": lote, "Alertas": [], "Erros": []}
+    # Forma observada no ADN de produção em 29/10/2026 (TipoAmbiente vem como texto).
+    corpo = {"StatusProcessamento": status, "LoteDFe": lote, "Alertas": [], "Erros": [],
+             "TipoAmbiente": "PRODUCAO", "VersaoAplicativo": "1.0.0.0",
+             "DataHoraProcessamento": "2026-10-29T10:00:00.000-03:00"}
     if estilo == "camel":
         corpo = {"statusProcessamento": status, "loteDFe": [
             {chave[0].lower() + chave[1:]: valor for chave, valor in item.items()}
             for item in lote]}
     return RespostaHttp(http, json.dumps(corpo).encode(), {"content-type": "application/json"})
+
+
+def _chave_do_xml(xml: bytes) -> str | None:
+    """Chave do documento (``Id`` sem o prefixo de 3 letras), se houver."""
+    elemento = next((e for e in etree.fromstring(xml).iter() if e.get("Id")), None)
+    return elemento.get("Id")[3:53] if elemento is not None else None
 
 
 def resposta_adn_vazia() -> RespostaHttp:
