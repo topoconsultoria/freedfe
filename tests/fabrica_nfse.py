@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+from decimal import Decimal
 
 from freedfe.nfse.envelope import comprimir_b64
+from freedfe.nfse.modelo import (
+    Dps,
+    Endereco,
+    OpcaoSimplesNacional,
+    Prestador,
+    RegimeApuracaoSimples,
+    Servico,
+    Tomador,
+    TotTrib,
+    TribMunicipal,
+    Valores,
+)
+from freedfe.tipos import FUSO_BRASILIA
 from freedfe.transporte import RespostaHttp
 from freedfe.validadores import _digito_modulo_11
 
@@ -47,3 +62,43 @@ def resposta_erro(codigo: str, descricao: str = "Erro de teste", status: int = 4
         corpo = {"erros": [{"codigo": codigo, "descricao": descricao,
                             "complemento": complemento}]}
     return RespostaHttp(status, json.dumps(corpo).encode(), {"content-type": "application/json"})
+
+
+# ---------------------------------------------------------------------------
+# Modelo da DPS
+# ---------------------------------------------------------------------------
+
+DATA_EMISSAO = dt.datetime(2026, 10, 29, 10, 0, 0, tzinfo=FUSO_BRASILIA)
+
+
+def prestador_simples(**alteracoes) -> Prestador:
+    """Prestador ME/EPP optante do Simples (emitente: sem endereço)."""
+    dados = dict(cnpj=CNPJ_PRESTADOR, inscricao_municipal="152422",
+                 opcao_simples=OpcaoSimplesNacional.ME_EPP,
+                 regime_apuracao_simples=RegimeApuracaoSimples.FEDERAIS_E_MUNICIPAL_PELO_SIMPLES)
+    dados.update(alteracoes)
+    return Prestador(**dados)
+
+
+def tomador_pj(**alteracoes) -> Tomador:
+    dados = dict(cnpj=CNPJ_TOMADOR, nome="EMPRESA TOMADORA DE TESTE LTDA")
+    dados.update(alteracoes)
+    return Tomador(**dados)
+
+
+def endereco_tomador() -> Endereco:
+    return Endereco.nacional("Rua das Flores", "100", "Centro", MUNICIPIO_TOMADOR, "44001000",
+                             complemento="Sala 2")
+
+
+def dps_minima(**alteracoes) -> Dps:
+    """DPS mínima válida: prestador do Simples, sem tomador identificado."""
+    dados = dict(
+        serie=900, numero=6, data_competencia=dt.date(2026, 10, 29), data_emissao=DATA_EMISSAO,
+        codigo_municipio_emissor=MUNICIPIO, prestador=prestador_simples(),
+        servico=Servico("010101", "Desenvolvimento de sistema sob encomenda",
+                        codigo_municipio_prestacao=MUNICIPIO),
+        valores=Valores(Decimal("1000.00")),
+        trib_municipal=TribMunicipal(), tot_trib=TotTrib.simples("6.00"))
+    dados.update(alteracoes)
+    return Dps(**dados)
