@@ -21,7 +21,7 @@ from freedfe.interessado import Interessado
 from freedfe.manifestacao.assinatura import AssinadorXml
 from freedfe.manifestacao.cliente import ClienteManifestacao, RetornoManifestacao
 from freedfe.nfse.servico import ConfiguracaoNfseLocal, ServicoNfse
-from freedfe.pdf.gerador import GeradorPdf, GeradorPdfBrazilFiscalReport
+from freedfe.pdf.gerador import GeradorPdf, GeradorPdfPadrao
 from freedfe.repositorio.arquivos import RepositorioArquivos
 from freedfe.repositorio.base import RepositorioDocumentos, ResultadoArmazenamento
 from freedfe.repositorio.filtro import Direcao, FiltroConsulta
@@ -90,7 +90,7 @@ class FreeDFe:
         self._servico_nfse: ServicoNfse | None = None
         self.repositorio = repositorio or RepositorioArquivos(
             self.pasta, self.interessado.documento)
-        self._gerador_pdf = gerador_pdf or GeradorPdfBrazilFiscalReport()
+        self._gerador_pdf = gerador_pdf or GeradorPdfPadrao(self._url_consulta_publica)
         self._relogio = relogio
         self._pausa = pausa_entre_lotes
         self._auditoria = RegistroAuditoria(self.pasta / "_estado" / "chamadas.jsonl")
@@ -189,14 +189,21 @@ class FreeDFe:
 
     def gerar_pdfs(self, filtro: FiltroConsulta | None = None,
                    destino: str | Path = "./pdf") -> ResultadoGeracaoPdf:
-        """Gera DANFE/DACTE/DAMDFE dos documentos com XML completo, como ``<chave>.pdf``."""
+        """Gera DANFE/DACTE/DAMDFE/DANFSe dos documentos com XML completo, como ``<chave>.pdf``.
+
+        A NFS-e usa o DANFSe local (extra ``nfse``: reportlab), com marca d'água de cancelada
+        ou substituída conforme os eventos armazenados.
+        """
         filtro = replace(self._preparar_filtro(filtro), somente_xml_completo=True)
         resultado = ResultadoGeracaoPdf()
         for resumo in self.repositorio.listar(filtro):
             caminho = Path(destino) / f"{resumo.chave}.pdf"
             try:
                 xml = self.repositorio.ler_xml(resumo)
-                resultado.gerados.append(self._gerador_pdf.gerar(xml, resumo.modelo, caminho))
+                argumentos = ({"situacao": resumo.situacao}
+                              if resumo.modelo is ModeloDocumento.NFSE else {})
+                resultado.gerados.append(
+                    self._gerador_pdf.gerar(xml, resumo.modelo, caminho, **argumentos))
             except FreeDFeErro:
                 raise  # dependência ausente etc.: não adianta continuar
             except Exception as erro:  # noqa: BLE001 - layout inesperado em um XML não interrompe o lote
@@ -248,7 +255,7 @@ class FreeDFe:
                 repositorio=self.repositorio, auditoria=self._auditoria,
                 obter_certificado=self._exigir_certificado,
                 obter_transporte=self._obter_transporte_rest, relogio=self._relogio,
-                opcoes=self._config_nfse)
+                opcoes=self._config_nfse, gerador_pdf=self._gerador_pdf)
         return self._servico_nfse
 
     # ------------------------------------------------------------------
@@ -280,6 +287,10 @@ class FreeDFe:
         if self._transporte is None:
             self._transporte = ClienteSoap(self._exigir_certificado(), self._ca_bundle)
         return self._transporte
+
+    def _url_consulta_publica(self, chave: str) -> str:
+        """URL do QR Code do DANFSe, do ambiente e da configuração da fachada."""
+        return self.nfse.configuracao.url_consulta_publica(chave)
 
     def _obter_transporte_rest(self) -> TransporteRest:
         if self._transporte_rest is None:

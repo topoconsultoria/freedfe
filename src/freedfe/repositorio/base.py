@@ -91,6 +91,11 @@ class RepositorioDocumentos(ABC):
                     encontrados.append(resumo)
         return sorted(encontrados, key=_ordem_listagem)
 
+    def obter_atual(self, modelo: ModeloDocumento, chave: str) -> ResumoDocumento | None:
+        """Resumo de uma chave com a situação atualizada pelos eventos (cancelada, substituída)."""
+        resumo = self.obter(modelo, chave)
+        return self._aplicar_eventos(resumo) if resumo else None
+
     def lacunas_nsu(self, modelo: ModeloDocumento) -> list[str]:
         """NSU faltantes entre os já recebidos (candidatos a consulta pontual)."""
         nsus = sorted(int(n) for n in self._nsus(modelo))

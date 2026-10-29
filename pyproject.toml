@@ -25,7 +25,8 @@ dependencies = [
 [project.optional-dependencies]
 pdf = ["brazilfiscalreport[dacte,damdfe]>=1.0"]
 xlsx = ["openpyxl>=3.1"]
-todos = ["freedfe[pdf,xlsx]"]
+nfse = ["reportlab>=4"]
+todos = ["freedfe[pdf,xlsx,nfse]"]
 dev = ["freedfe[todos]", "pytest>=7", "ruff>=0.4"]
 
 [project.urls]

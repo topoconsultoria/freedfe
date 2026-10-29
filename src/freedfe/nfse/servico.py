@@ -62,6 +62,7 @@ from freedfe.nfse.resposta import (
     ler_chave_do_xml,
 )
 from freedfe.nfse.validador_xsd import ValidadorXsd
+from freedfe.pdf.gerador import GeradorPdf, GeradorPdfPadrao
 from freedfe.repositorio.base import RepositorioDocumentos
 from freedfe.servicos import ConfiguracaoNfse, configuracao_nfse
 from freedfe.tipos import FUSO_BRASILIA, Ambiente, ModeloDocumento
@@ -133,7 +134,8 @@ class ServicoNfse:
                  obter_transporte: Callable[[], TransporteRest],
                  relogio: Relogio = relogio_utc,
                  opcoes: ConfiguracaoNfseLocal | None = None,
-                 pausa: Callable[[float], None] | None = None):
+                 pausa: Callable[[float], None] | None = None,
+                 gerador_pdf: GeradorPdf | None = None):
         self._ambiente = Ambiente(ambiente)
         self._interessado = interessado
         self._pasta = Path(pasta)
@@ -144,6 +146,7 @@ class ServicoNfse:
         self._relogio = relogio
         self._opcoes = opcoes or ConfiguracaoNfseLocal()
         self._pausa = pausa or self._opcoes.pausa or time.sleep
+        self._gerador_pdf = gerador_pdf
         self._validadores: dict[VersaoLeiaute, ValidadorXsd] = {}
         configuracao = configuracao_nfse(self._ambiente, self._opcoes.prefixo_api)
         if self._opcoes.url_consulta_publica:
@@ -225,6 +228,30 @@ class ServicoNfse:
         if armazenar:
             self._repositorio.armazenar([DocumentoRecebido(xml=retorno.xml_nfse)])
         return retorno
+
+    # ------------------------------------------------------------------
+    # DANFSe
+    # ------------------------------------------------------------------
+
+    def gerar_danfse(self, chave: str, destino: str | Path | None = None) -> Path:
+        """Gera o DANFSe (PDF com QR Code) de uma NFS-e armazenada no repositório.
+
+        Cancelada ou substituída (pelos eventos armazenados) recebe marca d'água.
+        Requer o extra ``nfse``: ``pip install 'freedfe[nfse]'``.
+
+        Args:
+            chave: chave de acesso (50 posições). Se a nota não estiver no repositório, use
+                antes ``consultar_chave`` ou ``sincronizar``.
+            destino: arquivo PDF; padrão ``nfse/danfse/<chave>.pdf`` na pasta de dados.
+        """
+        chave = exigir_chave_nfse(chave)
+        resumo = self._repositorio.obter_atual(ModeloDocumento.NFSE, chave)
+        if resumo is None:
+            raise ValidacaoErro(f"A NFS-e {chave} não está no repositório; use consultar_chave().")
+        destino = Path(destino) if destino else self._pasta / "nfse" / "danfse" / f"{chave}.pdf"
+        gerador = self._gerador_pdf or GeradorPdfPadrao(self.configuracao.url_consulta_publica)
+        return gerador.gerar(self._repositorio.ler_xml(resumo), ModeloDocumento.NFSE, destino,
+                             situacao=resumo.situacao)
 
     # ------------------------------------------------------------------
     # Sincronização pelo ADN (notas tomadas e eventos fora do ERP)
