@@ -216,9 +216,7 @@ def test_baixar_xml_da_nfse(dfe, tmp_path):
     assert arquivo.name == f"{dfe.chave_teste}.xml"
 
 
-def test_sincronizar_por_modelo_nao_aceita_nfse(dfe):
-    with pytest.raises(ValidacaoErro, match="dfe.nfse"):
-        dfe.sincronizar(["nfse"])
+def test_consultar_nsu_pontual_nao_existe_para_nfse(dfe):
     with pytest.raises(ValidacaoErro, match="dfe.nfse"):
         dfe.consultar_nsu("nfse", 1)
 

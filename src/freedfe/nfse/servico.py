@@ -25,7 +25,8 @@ from lxml import etree
 from freedfe.assinatura import PERFIL_NFSE, AssinadorXml, verificar_assinatura
 from freedfe.auditoria import RegistroAuditoria
 from freedfe.certificado import CertificadoA1
-from freedfe.distribuicao.estado import Relogio, relogio_utc
+from freedfe.distribuicao.cliente import ResultadoSincronizacao
+from freedfe.distribuicao.estado import EstadoNSU, Relogio, relogio_utc
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.distribuicao.trava import TravaArquivo
 from freedfe.documentos.resumo import EventoDocumento, evento_cancela, evento_substitui
@@ -37,6 +38,7 @@ from freedfe.excecoes import (
     ValidacaoErro,
 )
 from freedfe.interessado import Interessado
+from freedfe.nfse.cliente_adn import BLOQUEIO_PADRAO_SEGUNDOS, ClienteAdn, SincronizadorAdn
 from freedfe.nfse.cliente_sefin import ESPERAS_PADRAO, ClienteSefin
 from freedfe.nfse.estado_emissao import (
     SITUACOES_A_RECONCILIAR,
@@ -87,8 +89,11 @@ class ConfiguracaoNfseLocal:
         verificar_assinatura_retorno: confere a assinatura da NFS-e devolvida (aviso em log).
         folga_emissao_segundos: subtraída do relógio quando ``dhEmi`` não é informada (E0008).
         pausa_entre_lotes_adn: espera entre chamadas da sincronização pelo ADN.
+        bloqueio_adn_segundos: intervalo mínimo entre sincronizações que esgotaram o ADN
+            (a NFS-e não tem a regra de 1 h da NF-e; padrão 15 min).
         esperas_consulta: segundos de espera antes de cada nova tentativa de ``GET``/``HEAD``
             (o ``POST`` de emissão nunca é repetido). ``()`` desliga as repetições.
+        pausa: função de espera entre tentativas e lotes (padrão ``time.sleep``).
     """
 
     leiaute: VersaoLeiaute | None = None
@@ -98,7 +103,9 @@ class ConfiguracaoNfseLocal:
     verificar_assinatura_retorno: bool = False
     folga_emissao_segundos: int = FOLGA_EMISSAO_SEGUNDOS
     pausa_entre_lotes_adn: float = 1.0
+    bloqueio_adn_segundos: int = BLOQUEIO_PADRAO_SEGUNDOS
     esperas_consulta: tuple[float, ...] = ESPERAS_PADRAO
+    pausa: Callable[[float], None] | None = None
 
 
 @dataclass
@@ -126,7 +133,7 @@ class ServicoNfse:
                  obter_transporte: Callable[[], TransporteRest],
                  relogio: Relogio = relogio_utc,
                  opcoes: ConfiguracaoNfseLocal | None = None,
-                 pausa: Callable[[float], None] = time.sleep):
+                 pausa: Callable[[float], None] | None = None):
         self._ambiente = Ambiente(ambiente)
         self._interessado = interessado
         self._pasta = Path(pasta)
@@ -136,7 +143,7 @@ class ServicoNfse:
         self._obter_transporte = obter_transporte
         self._relogio = relogio
         self._opcoes = opcoes or ConfiguracaoNfseLocal()
-        self._pausa = pausa
+        self._pausa = pausa or self._opcoes.pausa or time.sleep
         self._validadores: dict[VersaoLeiaute, ValidadorXsd] = {}
         configuracao = configuracao_nfse(self._ambiente, self._opcoes.prefixo_api)
         if self._opcoes.url_consulta_publica:
@@ -218,6 +225,34 @@ class ServicoNfse:
         if armazenar:
             self._repositorio.armazenar([DocumentoRecebido(xml=retorno.xml_nfse)])
         return retorno
+
+    # ------------------------------------------------------------------
+    # Sincronização pelo ADN (notas tomadas e eventos fora do ERP)
+    # ------------------------------------------------------------------
+
+    def sincronizar(self, max_lotes: int = 200,
+                    cnpj_consulta: str | None = None) -> ResultadoSincronizacao:
+        """Baixa do ADN, por NSU, as NFS-e e os eventos do contribuinte.
+
+        Captura notas tomadas e eventos feitos fora do ERP (cancelamento pelo portal ou por
+        ofício, análise fiscal); a situação das notas locais é atualizada pelos eventos.
+
+        Args:
+            max_lotes: máximo de chamadas ao ADN nesta execução.
+            cnpj_consulta: CNPJ da mesma raiz do certificado (matriz/filiais). Cada CNPJ tem
+                a sua própria sequência de NSU.
+        """
+        self._obter_certificado()
+        sufixo = f"_{cnpj_consulta}" if cnpj_consulta else ""
+        arquivo = self._pasta / "_estado" / f"nsu_nfse{sufixo}.json"
+        with TravaArquivo(arquivo.with_suffix(".lock")):
+            estado = EstadoNSU(arquivo, self._relogio, self._opcoes.bloqueio_adn_segundos)
+            cliente = ClienteAdn(self.configuracao, self._obter_transporte(), self._auditoria,
+                                 pausa=self._pausa, esperas=self._opcoes.esperas_consulta)
+            return SincronizadorAdn(
+                cliente, estado, self._repositorio, self._pausa,
+                self._opcoes.pausa_entre_lotes_adn, cnpj_consulta=cnpj_consulta
+            ).sincronizar(max_lotes)
 
     # ------------------------------------------------------------------
     # Parâmetros municipais

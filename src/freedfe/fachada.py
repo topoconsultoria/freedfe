@@ -105,14 +105,17 @@ class FreeDFe:
         """Baixa os documentos novos de cada modelo (``distNSU``), respeitando bloqueios.
 
         Args:
-            modelos: modelos a sincronizar. Padrão: NF-e, CT-e e MDF-e.
+            modelos: modelos a sincronizar. Padrão: NF-e, CT-e e MDF-e. ``"nfse"`` sincroniza
+                pelo ADN (equivale a ``dfe.nfse.sincronizar``) e deve ser pedido explicitamente.
             max_lotes: máximo de chamadas por modelo (cada uma traz até 50 documentos).
         """
         modelos = self._modelos(modelos)
-        self._rejeitar_nfse(modelos)
         self._validar_uf(modelos)
         resultados = []
         for modelo in modelos:
+            if modelo is ModeloDocumento.NFSE:  # fluxo próprio, pelo ADN
+                resultados.append(self.nfse.sincronizar(max_lotes))
+                continue
             with TravaArquivo(self._arquivo_estado(modelo).with_suffix(".lock")):
                 resultados.append(self._cliente_distribuicao(modelo).sincronizar(max_lotes))
         return resultados
@@ -287,6 +290,9 @@ class FreeDFe:
         return self.pasta / "_estado" / f"nsu_{modelo.value}.json"
 
     def _estado(self, modelo: ModeloDocumento) -> EstadoNSU:
+        if modelo is ModeloDocumento.NFSE:
+            bloqueio = (self._config_nfse or ConfiguracaoNfseLocal()).bloqueio_adn_segundos
+            return EstadoNSU(self._arquivo_estado(modelo), self._relogio, bloqueio)
         return EstadoNSU(self._arquivo_estado(modelo), self._relogio)
 
     def _cliente_distribuicao(self, modelo: ModeloDocumento) -> ClienteDistribuicao:

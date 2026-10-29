@@ -308,3 +308,27 @@ def resposta_lista_eventos(xmls: list[bytes], base64_duplo: bool = True) -> Resp
         itens.append({"arquivoXml": conteudo, "tipoEvento": 101101})
     return RespostaHttp(200, json.dumps({"eventos": itens}).encode(),
                         {"content-type": "application/json"})
+
+
+def resposta_adn(itens: list[tuple[int, bytes]], status: str = "DOCUMENTOS_LOCALIZADOS",
+                 estilo: str = "pascal", base64_duplo: bool = False,
+                 http: int = 200) -> RespostaHttp:
+    """Lote do ``GET /DFe/{NSU}`` do ADN (``itens``: pares ``(NSU, XML)``)."""
+    import base64
+    lote = []
+    for nsu, xml in itens:
+        conteudo = comprimir_b64(xml)
+        if base64_duplo:
+            conteudo = base64.b64encode(conteudo.encode()).decode()
+        lote.append({"NSU": nsu, "ArquivoXml": conteudo, "TipoDocumento": "NFSE",
+                     "DataHoraGeracao": "2026-10-29T10:00:00"})
+    corpo = {"StatusProcessamento": status, "LoteDFe": lote, "Alertas": [], "Erros": []}
+    if estilo == "camel":
+        corpo = {"statusProcessamento": status, "loteDFe": [
+            {chave[0].lower() + chave[1:]: valor for chave, valor in item.items()}
+            for item in lote]}
+    return RespostaHttp(http, json.dumps(corpo).encode(), {"content-type": "application/json"})
+
+
+def resposta_adn_vazia() -> RespostaHttp:
+    return resposta_adn([], "NENHUM_DOCUMENTO_LOCALIZADO")
