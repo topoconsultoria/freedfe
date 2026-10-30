@@ -6,9 +6,13 @@ pasta com a fachada. Princípios:
     - **idempotência**: a DPS é gravada e marcada ``ENVIADA`` antes do ``POST``; diante de
       timeout ou 5xx a Sefin é consultada por ``HEAD/GET /dps/{id}`` e o ``POST`` nunca é
       repetido sem essa confirmação;
-    - **um envio por vez** por emitente (trava de arquivo), para preservar a numeração;
+    - **um envio por vez** por emitente (trava exclusiva por recurso), para preservar a
+      numeração;
     - **XML exato**: a DPS assinada e a NFS-e devolvida são gravadas como trafegaram;
     - **auditoria sem XML**: a trilha registra códigos, status e Ids, nunca o conteúdo.
+
+O estado de emissão, as travas e o estado do NSU do ADN são injetáveis (``estado_emissao``,
+``travas`` e ``estado_nsu``); os padrões gravam arquivos em ``<pasta>/_estado``.
 """
 
 from __future__ import annotations
@@ -27,13 +31,20 @@ from freedfe.assinatura import PERFIL_NFSE, AssinadorXml, verificar_assinatura
 from freedfe.auditoria import RegistroAuditoria
 from freedfe.certificado import CertificadoA1
 from freedfe.distribuicao.cliente import ResultadoSincronizacao
-from freedfe.distribuicao.estado import EstadoNSU, Relogio, relogio_utc
+from freedfe.distribuicao.estado import (
+    EstadoNSU,
+    EstadoSequenciaNsu,
+    FabricaEstadoNsu,
+    Relogio,
+    relogio_utc,
+)
 from freedfe.distribuicao.retorno import DocumentoRecebido
-from freedfe.distribuicao.trava import TravaArquivo
+from freedfe.distribuicao.trava import FabricaTrava, Trava, TravaArquivo
 from freedfe.documentos.resumo import EventoDocumento, evento_cancela, evento_substitui
 from freedfe.excecoes import (
     ComunicacaoErro,
     EmissaoIncertaErro,
+    FreeDFeErro,
     RejeicaoNfseErro,
     RespostaInvalidaErro,
     ValidacaoErro,
@@ -45,6 +56,7 @@ from freedfe.nfse.envelope import com_declaracao_utf8
 from freedfe.nfse.estado_emissao import (
     SITUACOES_A_RECONCILIAR,
     EstadoEmissao,
+    EstadoEmissaoArquivo,
     RegistroEmissao,
     SituacaoEmissao,
 )
@@ -136,6 +148,20 @@ class ServicoNfse:
     """Operações da NFS-e Nacional sobre o repositório e o estado locais.
 
     Não instancie diretamente: use ``FreeDFe.nfse``.
+
+    Persistência injetável (para vários processos ou contêineres sem disco compartilhado;
+    ver o README). Os padrões reproduzem os arquivos de ``<pasta>/_estado``:
+
+    Args:
+        estado_emissao: estado das emissões (padrão: ``EstadoEmissaoArquivo`` em
+            ``emissoes_nfse.json``, criado a cada operação). Uma instância injetada é usada
+            como está e deve reler a fonte a cada chamada.
+        travas: fábrica de travas por recurso (``emissao_nfse``, ``nsu_nfse`` e
+            ``nsu_nfse_<cnpj>``). Padrão: ``TravaArquivo`` em ``<recurso>.lock``.
+        estado_nsu: fábrica do estado de NSU do ADN por recurso (``nsu_nfse`` e
+            ``nsu_nfse_<cnpj>``). Padrão: ``EstadoNSU`` em ``<recurso>.json``, com o
+            ``bloqueio_adn_segundos`` das opções; uma fábrica injetada define o seu próprio
+            bloqueio.
     """
 
     def __init__(self, *, ambiente: Ambiente, interessado: Interessado, pasta: Path,
@@ -145,7 +171,10 @@ class ServicoNfse:
                  relogio: Relogio = relogio_utc,
                  opcoes: ConfiguracaoNfseLocal | None = None,
                  pausa: Callable[[float], None] | None = None,
-                 gerador_pdf: GeradorPdf | None = None):
+                 gerador_pdf: GeradorPdf | None = None,
+                 estado_emissao: EstadoEmissao | None = None,
+                 travas: FabricaTrava | None = None,
+                 estado_nsu: FabricaEstadoNsu | None = None):
         self._ambiente = Ambiente(ambiente)
         self._interessado = interessado
         self._pasta = Path(pasta)
@@ -157,6 +186,9 @@ class ServicoNfse:
         self._opcoes = opcoes or ConfiguracaoNfseLocal()
         self._pausa = pausa or self._opcoes.pausa or time.sleep
         self._gerador_pdf = gerador_pdf
+        self._estado_emissao_injetado = estado_emissao
+        self._travas: FabricaTrava = travas or self._trava_arquivo
+        self._estado_nsu: FabricaEstadoNsu = estado_nsu or self._estado_nsu_arquivo
         self._validadores: dict[VersaoLeiaute, ValidadorXsd] = {}
         configuracao = self._opcoes.configuracao_api or configuracao_nfse(
             self._ambiente, self._opcoes.prefixo_api)
@@ -194,8 +226,21 @@ class ServicoNfse:
         leiaute = self._leiaute(leiaute)
         with self._trava():
             estado = self._novo_estado()
-            preparada = self._preparar(dps, leiaute, estado, certificado)
-            return self._enviar(preparada, estado, verificar_parametros)
+            reservada = None
+            try:
+                if isinstance(dps, Dps) and dps.numero is None:
+                    reservada = self._reservar_numero(dps, estado)
+                    dps = replace(dps, numero=reservada.numero)
+                preparada = self._preparar(dps, leiaute, estado, certificado)
+                if reservada is not None and preparada.id_dps != reservada.id_dps:
+                    raise FreeDFeErro(
+                        f"O Id da DPS montada ({preparada.id_dps}) difere do Id reservado "
+                        f"({reservada.id_dps}).")
+                return self._enviar(preparada, estado, verificar_parametros)
+            except BaseException:
+                if reservada is not None:
+                    self._devolver_reserva(estado, reservada.id_dps)
+                raise
 
     def gerar_dps_assinada(self, dps: Dps | bytes, leiaute: VersaoLeiaute | None = None) -> bytes:
         """DPS assinada, sem enviar nada nem reservar número (conferência antes de emitir)."""
@@ -282,10 +327,9 @@ class ServicoNfse:
                 a sua própria sequência de NSU.
         """
         self._obter_certificado()
-        sufixo = f"_{cnpj_consulta}" if cnpj_consulta else ""
-        arquivo = self._pasta / "_estado" / f"nsu_nfse{sufixo}.json"
-        with TravaArquivo(arquivo.with_suffix(".lock")):
-            estado = EstadoNSU(arquivo, self._relogio, self._opcoes.bloqueio_adn_segundos)
+        recurso = f"nsu_nfse_{cnpj_consulta}" if cnpj_consulta else "nsu_nfse"
+        with self._travas(recurso):
+            estado = self._estado_nsu(recurso)
             cliente = ClienteAdn(self.configuracao, self._obter_transporte(), self._auditoria,
                                  pausa=self._pausa, esperas=self._opcoes.esperas_consulta)
             return SincronizadorAdn(
@@ -501,6 +545,33 @@ class ServicoNfse:
             folga_emissao_segundos=self._opcoes.folga_emissao_segundos)
         return montador.montar(dps)
 
+    def _reservar_numero(self, dps: Dps, estado: EstadoEmissao) -> RegistroEmissao:
+        """Numeração automática de ``emitir``: reserva o próximo número da série, atomicamente.
+
+        O Id da reserva é composto pela mesma função que o montador usa (``id_dps``).
+        """
+        serie = int(dps.serie)
+        self._exigir_sem_pendencias(estado, serie)
+        return estado.reservar_proximo(
+            serie, lambda numero: montar_id_dps(
+                dps.codigo_municipio_emissor, dps.documento_emitente, serie, numero))
+
+    @staticmethod
+    def _devolver_reserva(estado: EstadoEmissao, id_dps: str) -> None:
+        """Descarta a reserva se a emissão falhou antes do envio (o número não é consumido).
+
+        Só remove ``PENDENTE`` com ``tentativas == 0``: depois do ``marcar(ENVIADA)`` o registro
+        é evidência e fica. Uma falha aqui é registrada em log e não substitui o erro original.
+        """
+        try:
+            registro = estado.obter(id_dps)
+            if (registro is not None and registro.situacao is SituacaoEmissao.PENDENTE
+                    and registro.tentativas == 0):
+                estado.descartar(id_dps)
+        except Exception:
+            logger.exception("A reserva %s não pôde ser descartada após a falha da emissão; "
+                             "o número ficará sem uso.", id_dps)
+
     @staticmethod
     def _exigir_sem_pendencias(estado: EstadoEmissao, serie: int) -> None:
         """Numeração automática com emissão incerta pendente geraria uma segunda nota."""
@@ -715,12 +786,23 @@ class ServicoNfse:
         return ClienteSefin(self.configuracao, self._obter_transporte(), self._auditoria,
                             pausa=self._pausa, esperas=self._opcoes.esperas_consulta)
 
-    def _trava(self) -> TravaArquivo:
-        return TravaArquivo(self._pasta / "_estado" / "emissao_nfse.lock")
+    def _trava(self) -> Trava:
+        return self._travas("emissao_nfse")
+
+    def _trava_arquivo(self, recurso: str) -> Trava:
+        """Trava padrão: ``<pasta>/_estado/<recurso>.lock`` (só vale com disco compartilhado)."""
+        return TravaArquivo(self._pasta / "_estado" / f"{recurso}.lock")
+
+    def _estado_nsu_arquivo(self, recurso: str) -> EstadoSequenciaNsu:
+        """Estado de NSU padrão: ``<pasta>/_estado/<recurso>.json``."""
+        return EstadoNSU(self._pasta / "_estado" / f"{recurso}.json", self._relogio,
+                         self._opcoes.bloqueio_adn_segundos)
 
     def _novo_estado(self) -> EstadoEmissao:
-        """Estado relido a cada operação: outro processo pode tê-lo alterado."""
-        return EstadoEmissao(self._pasta / "_estado" / "emissoes_nfse.json", self._relogio)
+        """Estado das emissões; o padrão em arquivo é recriado e relido a cada operação."""
+        if self._estado_emissao_injetado is not None:
+            return self._estado_emissao_injetado
+        return EstadoEmissaoArquivo(self._pasta / "_estado" / "emissoes_nfse.json", self._relogio)
 
     def _gravar_arquivo(self, preparada: _DpsPreparada, tentativa: int, sufixo: str,
                         conteudo: bytes) -> str:

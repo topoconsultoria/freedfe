@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from freedfe.distribuicao.cliente import ResultadoSincronizacao
-from freedfe.distribuicao.estado import EstadoNSU
+from freedfe.distribuicao.estado import EstadoSequenciaNsu
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.excecoes import ComunicacaoErro
 from freedfe.nfse.cliente_base import ClienteNfseBase
@@ -123,7 +123,7 @@ class SincronizadorAdn:
 
     Args:
         cliente: cliente HTTP do ADN.
-        estado: estado persistido da sequência (``EstadoNSU``).
+        estado: estado persistido da sequência (``EstadoSequenciaNsu``).
         repositorio: destino dos XML (NFS-e e eventos).
         pausa: função de espera (substituível em testes).
         pausa_entre_lotes: espera entre chamadas consecutivas.
@@ -131,7 +131,8 @@ class SincronizadorAdn:
         cnpj_consulta: CNPJ diferente do certificado (mesma raiz: matriz/filiais).
     """
 
-    def __init__(self, cliente: ClienteAdn, estado: EstadoNSU, repositorio: RepositorioDocumentos,
+    def __init__(self, cliente: ClienteAdn, estado: EstadoSequenciaNsu,
+                 repositorio: RepositorioDocumentos,
                  pausa: Callable[[float], None] = time.sleep, pausa_entre_lotes: float = 1.0,
                  espera_429: float = ESPERA_429_PADRAO, cnpj_consulta: str | None = None):
         if cnpj_consulta is not None and not validar_cnpj(cnpj_consulta):
