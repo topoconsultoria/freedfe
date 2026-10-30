@@ -1,25 +1,37 @@
 """Implementações em memória dos contratos de persistência da NFS-e (somente para testes).
 
-Servem de segundo backend para provar que os contratos (``EstadoEmissao``, ``Trava`` e
-``EstadoSequenciaNsu``) não dependem de arquivos e que ``ServicoNfse`` aceita qualquer
+Servem de segundo backend para provar que os contratos (``EstadoEmissao``, ``Trava``,
+``EstadoSequenciaNsu``, ``CacheParametros``, ``ArmazenamentoEvidencias``, ``Auditoria`` e
+``RepositorioDocumentos``) não dependem de arquivos e que ``ServicoNfse`` aceita qualquer
 implementação injetada. Não são exportadas pela biblioteca.
 """
 
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import hashlib
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import Any
 
+from freedfe.auditoria import Auditoria
 from freedfe.distribuicao.estado import (
     BLOQUEIO_SEGUNDOS,
     EstadoSequenciaNsu,
     Relogio,
     relogio_utc,
 )
+from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.distribuicao.trava import Trava
+from freedfe.documentos.leitor import LeitorDocumentoFiscal
+from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento
 from freedfe.excecoes import SincronizacaoEmAndamentoErro
 from freedfe.nfse.estado_emissao import EstadoEmissao, RegistroEmissao, SituacaoEmissao
+from freedfe.nfse.evidencias import ArmazenamentoEvidencias
+from freedfe.nfse.parametros import TTL_PADRAO, CacheParametros
+from freedfe.repositorio.base import RepositorioDocumentos
+from freedfe.tipos import ModeloDocumento
 
 
 class EstadoEmissaoMemoria(EstadoEmissao):
@@ -167,3 +179,129 @@ class EstadoNsuMemoria(EstadoSequenciaNsu):
 
     def _gravar_dados(self, dados: dict) -> None:
         self.armazenamento[self.recurso] = copy.deepcopy(dados)
+
+
+class RepositorioMemoria(RepositorioDocumentos):
+    """Repositório de documentos em dicionários, com a lógica herdada da base.
+
+    Devolve cópias, como um banco faria. O XML fica indexado por ``caminho_xml`` (uma referência
+    ``memoria:...`` no lugar do caminho relativo de ``RepositorioArquivos``).
+    """
+
+    def __init__(self, interessado: str | None = None, leitor: LeitorDocumentoFiscal | None = None):
+        super().__init__(interessado, leitor)
+        self._documentos: dict[ModeloDocumento, dict[str, ResumoDocumento]] = {}
+        self._eventos: dict[ModeloDocumento, dict[str, list[EventoDocumento]]] = {}
+        self._xmls: dict[str, bytes] = {}
+        self._sequencias: dict[ModeloDocumento, set[str]] = {}
+        self.nao_reconhecidos: list[DocumentoRecebido] = []
+
+    def obter(self, modelo: ModeloDocumento, chave: str) -> ResumoDocumento | None:
+        resumo = self._documentos.get(ModeloDocumento.normalizar(modelo), {}).get(chave)
+        return copy.deepcopy(resumo)
+
+    def eventos(self, modelo: ModeloDocumento, chave: str) -> list[EventoDocumento]:
+        return copy.deepcopy(
+            self._eventos.get(ModeloDocumento.normalizar(modelo), {}).get(chave, []))
+
+    def ler_xml(self, resumo: ResumoDocumento) -> bytes:
+        return self._xmls[resumo.caminho_xml]
+
+    def _resumos(self, modelo: ModeloDocumento) -> Iterable[ResumoDocumento]:
+        return copy.deepcopy(list(self._documentos.get(ModeloDocumento.normalizar(modelo), {})
+                                  .values()))
+
+    def _nsus(self, modelo: ModeloDocumento) -> Iterable[str]:
+        return set(self._sequencias.get(ModeloDocumento.normalizar(modelo), set()))
+
+    def _gravar_documento(self, resumo: ResumoDocumento, xml: bytes) -> None:
+        documentos = self._documentos.setdefault(resumo.modelo, {})
+        existente = documentos.get(resumo.chave)
+        if existente and existente.xml_completo and not resumo.xml_completo:
+            return  # não rebaixa XML completo para resumo
+        resumo.caminho_xml = f"memoria:{resumo.modelo.value}/{resumo.chave}-{resumo.tipo_xml}"
+        self._xmls[resumo.caminho_xml] = xml
+        documentos[resumo.chave] = resumo
+
+    def _gravar_evento(self, evento: EventoDocumento, xml: bytes) -> None:
+        conhecidos = self._eventos.setdefault(evento.modelo, {}).setdefault(evento.chave, [])
+        identificador = evento.protocolo or evento.nsu or hashlib.sha256(xml).hexdigest()[:16]
+        evento.caminho_xml = (f"memoria:{evento.modelo.value}/eventos/"
+                              f"{evento.chave}-{evento.tipo_evento}-{identificador}")
+        if any(e.caminho_xml == evento.caminho_xml for e in conhecidos):
+            return  # evento já armazenado
+        self._xmls[evento.caminho_xml] = xml
+        conhecidos.append(evento)
+
+    def _gravar_nao_reconhecido(self, recebido: DocumentoRecebido) -> None:
+        self.nao_reconhecidos.append(recebido)
+
+    def _registrar_nsu(self, modelo: ModeloDocumento, nsu: str) -> None:
+        self._sequencias.setdefault(ModeloDocumento.normalizar(modelo), set()).add(nsu)
+
+    def _confirmar(self) -> None:
+        """Nada a persistir: os dicionários já são o armazenamento."""
+
+
+class CacheParametrosMemoria(CacheParametros):
+    """Cache de parâmetros em um dicionário ``(município, nome) -> (momento, dados)``."""
+
+    def __init__(self, relogio: Relogio = relogio_utc, ttl: dt.timedelta = TTL_PADRAO):
+        super().__init__(relogio, ttl)
+        self.itens: dict[tuple[str, str], tuple[dt.datetime, dict[str, Any]]] = {}
+
+    def _ler(self, municipio: str, nome: str) -> tuple[dt.datetime, dict[str, Any]] | None:
+        return copy.deepcopy(self.itens.get((municipio, nome)))
+
+    def _gravar(self, municipio: str, nome: str, momento: dt.datetime,
+                dados: dict[str, Any]) -> None:
+        self.itens[(municipio, nome)] = (momento, copy.deepcopy(dados))
+
+
+class EvidenciasMemoria(ArmazenamentoEvidencias):
+    """Evidências em dicionário. A referência segue o desenho dos caminhos em arquivo.
+
+    ``conteudos`` mapeia referência -> bytes e ``eventos`` registra cada gravação de evento
+    (referência, chave, tipo, mês, sufixo), na ordem em que ocorreram.
+    """
+
+    def __init__(self) -> None:
+        self.conteudos: dict[str, bytes] = {}
+        self.dps: list[tuple[str, str, int, str]] = []
+        self.eventos: list[tuple[str, str, str, str, str]] = []
+
+    def gravar_dps(self, id_dps: str, mes: str, tentativa: int, sufixo: str,
+                   conteudo: bytes) -> str:
+        base, extensao = sufixo.rsplit(".", 1)
+        nome = base if tentativa == 1 else f"{base}-{tentativa}"
+        referencia = f"memoria:nfse/dps/{mes}/{id_dps}-{nome}.{extensao}"
+        self.conteudos[referencia] = conteudo
+        self.dps.append((referencia, id_dps, tentativa, sufixo))
+        return referencia
+
+    def gravar_evento(self, chave: str, tipo_evento: str, mes: str, sufixo: str,
+                      conteudo: bytes) -> str:
+        base, extensao = sufixo.rsplit(".", 1)
+        indice = 1
+        while True:
+            nome = base if indice == 1 else f"{base}-{indice}"
+            referencia = (f"memoria:nfse/eventos_enviados/{mes}/"
+                          f"{chave}-{tipo_evento}-{nome}.{extensao}")
+            if referencia not in self.conteudos:
+                break
+            indice += 1
+        self.conteudos[referencia] = conteudo
+        self.eventos.append((referencia, chave, tipo_evento, mes, sufixo))
+        return referencia
+
+
+class AuditoriaMemoria(Auditoria):
+    """Trilha de auditoria em uma lista, protegida por ``Lock``."""
+
+    def __init__(self) -> None:
+        self.registros: list[dict[str, Any]] = []
+        self._trava = threading.Lock()
+
+    def registrar(self, **dados) -> None:
+        with self._trava:
+            self.registros.append(dict(dados))

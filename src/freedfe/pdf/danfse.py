@@ -22,6 +22,7 @@ emitente (``xLocEmi``); para as demais partes o DANFSe mostra o código IBGE.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -523,20 +524,35 @@ class GeradorDanfse(GeradorPdf):
     def gerar(self, xml: bytes, modelo: ModeloDocumento, destino: str | Path,
               situacao: SituacaoDocumento | None = None) -> Path:
         """Grava o PDF em ``destino``. ``situacao`` cancelada/substituída aplica marca d'água."""
+        destino = Path(destino)
+        self._construir(destino, xml, modelo, situacao)
+        return destino
+
+    def gerar_bytes(self, xml: bytes, modelo: ModeloDocumento,
+                    situacao: SituacaoDocumento | None = None) -> bytes:
+        """Devolve o PDF em memória (``io.BytesIO``), sem tocar o disco."""
+        saida = io.BytesIO()
+        self._construir(saida, xml, modelo, situacao)
+        return saida.getvalue()
+
+    def _construir(self, saida: Path | io.BufferedIOBase, xml: bytes, modelo: ModeloDocumento,
+                   situacao: SituacaoDocumento | None) -> None:
+        """Monta o documento e o grava em ``saida`` (caminho, criando a pasta, ou *file-like*)."""
         if ModeloDocumento.normalizar(modelo) is not ModeloDocumento.NFSE:
             raise ValidacaoErro("GeradorDanfse só gera o DANFSe de NFS-e Nacional.")
         rl = _carregar_reportlab()
         situacao = SituacaoDocumento(situacao) if situacao else None
         dados = extrair_dados(xml, situacao)
         url = self._url(dados)
-        destino = Path(destino)
-        destino.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(saida, Path):
+            saida.parent.mkdir(parents=True, exist_ok=True)
+            saida = str(saida)
         marca = MARCAS_DAGUA.get(situacao) if situacao else None
 
         mm = rl["mm"]
         largura, altura = rl["A4"]
         documento = rl["BaseDocTemplate"](
-            str(destino), pagesize=rl["A4"], title=f"DANFSe {dados.chave}", author="freedfe",
+            saida, pagesize=rl["A4"], title=f"DANFSe {dados.chave}", author="freedfe",
             pageCompression=1 if self._comprimir else 0)
         quadro = rl["Frame"](self.MARGEM_MM * mm, self.MARGEM_MM * mm,
                              largura - 2 * self.MARGEM_MM * mm,
@@ -555,7 +571,6 @@ class GeradorDanfse(GeradorPdf):
             elementos.append(rl["KeepTogether"]([rl["Spacer"](1, 0.5 * mm),
                                                  self._tabela_bloco(rl, bloco, largura_util)]))
         documento.build(elementos)
-        return destino
 
     def _url(self, dados: DadosDanfse) -> str:
         if self._url_consulta is not None:

@@ -11,8 +11,9 @@ pasta com a fachada. Princípios:
     - **XML exato**: a DPS assinada e a NFS-e devolvida são gravadas como trafegaram;
     - **auditoria sem XML**: a trilha registra códigos, status e Ids, nunca o conteúdo.
 
-O estado de emissão, as travas e o estado do NSU do ADN são injetáveis (``estado_emissao``,
-``travas`` e ``estado_nsu``); os padrões gravam arquivos em ``<pasta>/_estado``.
+Toda a persistência é injetável (repositório, auditoria, estado de emissão, travas, NSU do ADN,
+cache de parâmetros e evidências). Com ``pasta`` os padrões gravam arquivos; sem ``pasta`` o
+serviço não toca o disco e todas as dependências são obrigatórias (ver ``criar_servico_nfse``).
 """
 
 from __future__ import annotations
@@ -28,16 +29,10 @@ from pathlib import Path
 from lxml import etree
 
 from freedfe.assinatura import PERFIL_NFSE, AssinadorXml, verificar_assinatura
-from freedfe.auditoria import RegistroAuditoria
+from freedfe.auditoria import Auditoria, RegistroAuditoria
 from freedfe.certificado import CertificadoA1
 from freedfe.distribuicao.cliente import ResultadoSincronizacao
-from freedfe.distribuicao.estado import (
-    EstadoNSU,
-    EstadoSequenciaNsu,
-    FabricaEstadoNsu,
-    Relogio,
-    relogio_utc,
-)
+from freedfe.distribuicao.estado import EstadoNSU, FabricaEstadoNsu, Relogio, relogio_utc
 from freedfe.distribuicao.retorno import DocumentoRecebido
 from freedfe.distribuicao.trava import FabricaTrava, Trava, TravaArquivo
 from freedfe.documentos.resumo import EventoDocumento, evento_cancela, evento_substitui
@@ -61,11 +56,17 @@ from freedfe.nfse.estado_emissao import (
     SituacaoEmissao,
 )
 from freedfe.nfse.eventos import MontadorPedidoEvento, MotivoCancelamento, TipoEventoNfse
+from freedfe.nfse.evidencias import ArmazenamentoEvidencias, ArmazenamentoEvidenciasArquivo
 from freedfe.nfse.identificadores import id_dps as montar_id_dps
 from freedfe.nfse.leiaute import NAMESPACE_NFSE, VersaoLeiaute
 from freedfe.nfse.modelo import Dps
 from freedfe.nfse.montador_dps import FOLGA_EMISSAO_SEGUNDOS, montador_para
-from freedfe.nfse.parametros import CacheParametros, ClienteParametros, Convenio
+from freedfe.nfse.parametros import (
+    CacheParametros,
+    CacheParametrosArquivo,
+    ClienteParametros,
+    Convenio,
+)
 from freedfe.nfse.resposta import (
     RetornoEmissao,
     RetornoEventoNfse,
@@ -77,9 +78,10 @@ from freedfe.nfse.resposta import (
 )
 from freedfe.nfse.validador_xsd import ValidadorXsd
 from freedfe.pdf.gerador import GeradorPdf, GeradorPdfPadrao
+from freedfe.repositorio.arquivos import RepositorioArquivos
 from freedfe.repositorio.base import RepositorioDocumentos
 from freedfe.servicos import ConfiguracaoNfse, configuracao_nfse
-from freedfe.tipos import FUSO_BRASILIA, Ambiente, ModeloDocumento
+from freedfe.tipos import FUSO_BRASILIA, Ambiente, ModeloDocumento, SituacaoDocumento
 from freedfe.transporte import TransporteRest
 from freedfe.validadores import exigir_chave_nfse, exigir_codigo_ibge, exigir_id_dps
 
@@ -147,12 +149,21 @@ class _DpsPreparada:
 class ServicoNfse:
     """Operações da NFS-e Nacional sobre o repositório e o estado locais.
 
-    Não instancie diretamente: use ``FreeDFe.nfse``.
+    Não instancie diretamente: use ``FreeDFe.nfse`` (que monta tudo a partir de uma ``pasta``) ou
+    ``criar_servico_nfse`` (sem pasta local, com a persistência injetada pela aplicação).
 
-    Persistência injetável (para vários processos ou contêineres sem disco compartilhado;
-    ver o README). Os padrões reproduzem os arquivos de ``<pasta>/_estado``:
+    **Com ``pasta``**, cada dependência de persistência ausente recebe a implementação em arquivo:
+    ``<pasta>/_estado`` para auditoria, estado de emissão, travas, NSU e cache de parâmetros;
+    ``<pasta>/nfse`` para as evidências; ``<pasta>`` para o repositório.
+
+    **Sem ``pasta``**, o serviço não toca o disco e todas as dependências de persistência são
+    obrigatórias: ``repositorio``, ``auditoria``, ``estado_emissao``, ``travas``, ``estado_nsu``,
+    ``cache_parametros`` e ``evidencias``. As que faltarem são listadas em um ``ValidacaoErro``.
 
     Args:
+        pasta: raiz dos dados em arquivo, ou ``None`` para um serviço sem disco.
+        repositorio: repositório de documentos (padrão com ``pasta``: ``RepositorioArquivos``).
+        auditoria: trilha de auditoria (padrão: ``RegistroAuditoria`` em ``chamadas.jsonl``).
         estado_emissao: estado das emissões (padrão: ``EstadoEmissaoArquivo`` em
             ``emissoes_nfse.json``, criado a cada operação). Uma instância injetada é usada
             como está e deve reler a fonte a cada chamada.
@@ -162,33 +173,35 @@ class ServicoNfse:
             ``nsu_nfse_<cnpj>``). Padrão: ``EstadoNSU`` em ``<recurso>.json``, com o
             ``bloqueio_adn_segundos`` das opções; uma fábrica injetada define o seu próprio
             bloqueio.
+        cache_parametros: cache dos parâmetros municipais (padrão: ``CacheParametrosArquivo``
+            em ``parametros_nfse``).
+        evidencias: armazenamento da DPS enviada, das respostas e dos pedidos de evento (padrão:
+            ``ArmazenamentoEvidenciasArquivo``).
     """
 
-    def __init__(self, *, ambiente: Ambiente, interessado: Interessado, pasta: Path,
-                 repositorio: RepositorioDocumentos, auditoria: RegistroAuditoria,
+    def __init__(self, *, ambiente: Ambiente, interessado: Interessado,
                  obter_certificado: Callable[[], CertificadoA1],
                  obter_transporte: Callable[[], TransporteRest],
+                 pasta: Path | None = None,
+                 repositorio: RepositorioDocumentos | None = None,
+                 auditoria: Auditoria | None = None,
                  relogio: Relogio = relogio_utc,
                  opcoes: ConfiguracaoNfseLocal | None = None,
                  pausa: Callable[[float], None] | None = None,
                  gerador_pdf: GeradorPdf | None = None,
                  estado_emissao: EstadoEmissao | None = None,
                  travas: FabricaTrava | None = None,
-                 estado_nsu: FabricaEstadoNsu | None = None):
+                 estado_nsu: FabricaEstadoNsu | None = None,
+                 cache_parametros: CacheParametros | None = None,
+                 evidencias: ArmazenamentoEvidencias | None = None):
         self._ambiente = Ambiente(ambiente)
         self._interessado = interessado
-        self._pasta = Path(pasta)
-        self._repositorio = repositorio
-        self._auditoria = auditoria
         self._obter_certificado = obter_certificado
         self._obter_transporte = obter_transporte
         self._relogio = relogio
         self._opcoes = opcoes or ConfiguracaoNfseLocal()
         self._pausa = pausa or self._opcoes.pausa or time.sleep
         self._gerador_pdf = gerador_pdf
-        self._estado_emissao_injetado = estado_emissao
-        self._travas: FabricaTrava = travas or self._trava_arquivo
-        self._estado_nsu: FabricaEstadoNsu = estado_nsu or self._estado_nsu_arquivo
         self._validadores: dict[VersaoLeiaute, ValidadorXsd] = {}
         configuracao = self._opcoes.configuracao_api or configuracao_nfse(
             self._ambiente, self._opcoes.prefixo_api)
@@ -196,6 +209,41 @@ class ServicoNfse:
             configuracao = configuracao.com(
                 modelo_url_consulta_publica=self._opcoes.url_consulta_publica)
         self.configuracao: ConfiguracaoNfse = configuracao
+
+        # A pasta só é usada aqui (padrões em arquivo) e em gerar_danfse com destino=None.
+        self._pasta = Path(pasta) if pasta is not None else None
+        obrigatorias = {"repositorio": repositorio, "auditoria": auditoria,
+                        "estado_emissao": estado_emissao, "travas": travas,
+                        "estado_nsu": estado_nsu, "cache_parametros": cache_parametros,
+                        "evidencias": evidencias}
+        fabrica_estado: Callable[[], EstadoEmissao] | None = (
+            (lambda: estado_emissao) if estado_emissao is not None else None)
+        if self._pasta is None:
+            faltantes = [nome for nome, valor in obrigatorias.items() if valor is None]
+            if faltantes:
+                raise ValidacaoErro(
+                    "Sem pasta local, informe as dependências de persistência: "
+                    f"{', '.join(faltantes)}.")
+        else:
+            raiz, estado = self._pasta, self._pasta / "_estado"
+            repositorio = repositorio or RepositorioArquivos(raiz, interessado.documento)
+            auditoria = auditoria or RegistroAuditoria(estado / "chamadas.jsonl")
+            travas = travas or (lambda recurso: TravaArquivo(estado / f"{recurso}.lock"))
+            estado_nsu = estado_nsu or (lambda recurso: EstadoNSU(
+                estado / f"{recurso}.json", relogio, self._opcoes.bloqueio_adn_segundos))
+            cache_parametros = cache_parametros or CacheParametrosArquivo(
+                estado / "parametros_nfse", relogio)
+            evidencias = evidencias or ArmazenamentoEvidenciasArquivo(raiz)
+            if fabrica_estado is None:
+                def fabrica_estado() -> EstadoEmissao:
+                    return EstadoEmissaoArquivo(estado / "emissoes_nfse.json", relogio)
+        self._repositorio: RepositorioDocumentos = repositorio
+        self._auditoria: Auditoria = auditoria
+        self._travas: FabricaTrava = travas
+        self._estado_nsu: FabricaEstadoNsu = estado_nsu
+        self._cache_parametros: CacheParametros = cache_parametros
+        self._evidencias: ArmazenamentoEvidencias = evidencias
+        self._fabrica_estado_emissao: Callable[[], EstadoEmissao] = fabrica_estado
 
     # ------------------------------------------------------------------
     # Emissão
@@ -300,15 +348,40 @@ class ServicoNfse:
             chave: chave de acesso (50 posições). Se a nota não estiver no repositório, use
                 antes ``consultar_chave`` ou ``sincronizar``.
             destino: arquivo PDF; padrão ``nfse/danfse/<chave>.pdf`` na pasta de dados.
+
+        Raises:
+            ValidacaoErro: serviço sem pasta e sem ``destino`` (use ``danfse_bytes``), ou nota
+                fora do repositório.
         """
         chave = exigir_chave_nfse(chave)
+        if destino is None and self._pasta is None:
+            raise ValidacaoErro("Serviço sem pasta local: informe 'destino' ou use "
+                                "danfse_bytes(chave), que devolve o PDF em memória.")
+        xml, situacao = self._xml_para_danfse(chave)
+        destino = Path(destino) if destino else self._pasta / "nfse" / "danfse" / f"{chave}.pdf"
+        return self._gerador().gerar(xml, ModeloDocumento.NFSE, destino, situacao=situacao)
+
+    def danfse_bytes(self, chave: str) -> bytes:
+        """DANFSe (PDF com QR Code) de uma NFS-e do repositório, em memória e sem tocar o disco.
+
+        Mesma busca e mesma marca d'água (cancelada/substituída) de ``gerar_danfse``. Requer o
+        extra ``nfse``. Se um ``gerador_pdf`` próprio foi injetado, ele precisa sobrescrever
+        ``gerar_bytes`` para não usar o disco (o padrão de ``GeradorPdf`` usa um diretório
+        temporário).
+        """
+        chave = exigir_chave_nfse(chave)
+        xml, situacao = self._xml_para_danfse(chave)
+        return self._gerador().gerar_bytes(xml, ModeloDocumento.NFSE, situacao=situacao)
+
+    def _xml_para_danfse(self, chave: str) -> tuple[bytes, SituacaoDocumento]:
+        """XML e situação (pelos eventos armazenados) da NFS-e, para o DANFSe."""
         resumo = self._repositorio.obter_atual(ModeloDocumento.NFSE, chave)
         if resumo is None:
             raise ValidacaoErro(f"A NFS-e {chave} não está no repositório; use consultar_chave().")
-        destino = Path(destino) if destino else self._pasta / "nfse" / "danfse" / f"{chave}.pdf"
-        gerador = self._gerador_pdf or GeradorPdfPadrao(self.configuracao.url_consulta_publica)
-        return gerador.gerar(self._repositorio.ler_xml(resumo), ModeloDocumento.NFSE, destino,
-                             situacao=resumo.situacao)
+        return self._repositorio.ler_xml(resumo), resumo.situacao
+
+    def _gerador(self) -> GeradorPdf:
+        return self._gerador_pdf or GeradorPdfPadrao(self.configuracao.url_consulta_publica)
 
     # ------------------------------------------------------------------
     # Sincronização pelo ADN (notas tomadas e eventos fora do ERP)
@@ -344,7 +417,7 @@ class ServicoNfse:
     def convenio(self, codigo_municipio: str, atualizar: bool = False) -> Convenio:
         """Convênio do município com a NFS-e Nacional (cache de 24 h; ``atualizar`` ignora-o)."""
         municipio = exigir_codigo_ibge(codigo_municipio)
-        dados = self._cache().obter_ou_buscar(
+        dados = self._cache_parametros.obter_ou_buscar(
             municipio, "convenio", lambda: self._parametros().convenio(municipio), atualizar)
         return Convenio.de_dict(municipio, dados)
 
@@ -352,7 +425,7 @@ class ServicoNfse:
                            atualizar: bool = False) -> dict:
         """Parâmetros do serviço (``cTribNac``) no município: alíquota, deduções, regimes."""
         municipio = exigir_codigo_ibge(codigo_municipio)
-        return self._cache().obter_ou_buscar(
+        return self._cache_parametros.obter_ou_buscar(
             municipio, f"servico-{codigo_servico}",
             lambda: self._parametros().servico_municipal(municipio, codigo_servico), atualizar)
 
@@ -361,7 +434,7 @@ class ServicoNfse:
         """Retenções e benefícios do contribuinte (padrão: o CNPJ/CPF da fachada)."""
         municipio = exigir_codigo_ibge(codigo_municipio)
         documento = documento or self._interessado.documento
-        return self._cache().obter_ou_buscar(
+        return self._cache_parametros.obter_ou_buscar(
             municipio, f"contribuinte-{documento}",
             lambda: self._parametros().contribuinte(municipio, documento), atualizar)
 
@@ -394,9 +467,6 @@ class ServicoNfse:
     def _parametros(self) -> ClienteParametros:
         return ClienteParametros(self.configuracao, self._obter_transporte(), self._auditoria,
                                  pausa=self._pausa, esperas=self._opcoes.esperas_consulta)
-
-    def _cache(self) -> CacheParametros:
-        return CacheParametros(self._pasta / "_estado" / "parametros_nfse", self._relogio)
 
     # ------------------------------------------------------------------
     # Eventos: cancelamento
@@ -492,16 +562,9 @@ class ServicoNfse:
             logger.warning("Eventos da NFS-e %s não sincronizados: %s", chave, erro)
 
     def _gravar_evento_enviado(self, chave: str, tipo: str, sufixo: str, conteudo: bytes) -> None:
-        """Evidência do pedido enviado e da resposta bruta (``nfse/eventos_enviados``)."""
+        """Evidência do pedido enviado e da resposta bruta, pelo armazenamento de evidências."""
         mes = self._relogio().astimezone(FUSO_BRASILIA).strftime("%Y-%m")
-        pasta = self._pasta / "nfse" / "eventos_enviados" / mes
-        pasta.mkdir(parents=True, exist_ok=True)
-        base, extensao = sufixo.rsplit(".", 1)
-        destino, indice = pasta / f"{chave}-{tipo}-{base}.{extensao}", 1
-        while destino.exists():
-            indice += 1
-            destino = pasta / f"{chave}-{tipo}-{base}-{indice}.{extensao}"
-        destino.write_bytes(conteudo)
+        self._evidencias.gravar_evento(chave, tipo, mes, sufixo, conteudo)
 
     # ------------------------------------------------------------------
     # Preparação da DPS
@@ -789,31 +852,15 @@ class ServicoNfse:
     def _trava(self) -> Trava:
         return self._travas("emissao_nfse")
 
-    def _trava_arquivo(self, recurso: str) -> Trava:
-        """Trava padrão: ``<pasta>/_estado/<recurso>.lock`` (só vale com disco compartilhado)."""
-        return TravaArquivo(self._pasta / "_estado" / f"{recurso}.lock")
-
-    def _estado_nsu_arquivo(self, recurso: str) -> EstadoSequenciaNsu:
-        """Estado de NSU padrão: ``<pasta>/_estado/<recurso>.json``."""
-        return EstadoNSU(self._pasta / "_estado" / f"{recurso}.json", self._relogio,
-                         self._opcoes.bloqueio_adn_segundos)
-
     def _novo_estado(self) -> EstadoEmissao:
         """Estado das emissões; o padrão em arquivo é recriado e relido a cada operação."""
-        if self._estado_emissao_injetado is not None:
-            return self._estado_emissao_injetado
-        return EstadoEmissaoArquivo(self._pasta / "_estado" / "emissoes_nfse.json", self._relogio)
+        return self._fabrica_estado_emissao()
 
     def _gravar_arquivo(self, preparada: _DpsPreparada, tentativa: int, sufixo: str,
                         conteudo: bytes) -> str:
-        """Grava ``nfse/dps/<AAAA-MM>/<idDPS>-<sufixo>``; reenvios ganham ``-<n>`` (evidência)."""
-        base, extensao = sufixo.rsplit(".", 1)
-        nome = base if tentativa == 1 else f"{base}-{tentativa}"
-        relativo = Path("nfse") / "dps" / preparada.mes / f"{preparada.id_dps}-{nome}.{extensao}"
-        destino = self._pasta / relativo
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_bytes(conteudo)
-        return relativo.as_posix()
+        """Evidência da DPS enviada ou da resposta; reenvios ganham a numeração da tentativa."""
+        return self._evidencias.gravar_dps(
+            preparada.id_dps, preparada.mes, tentativa, sufixo, conteudo)
 
     def _auditar(self, operacao: str, id_dps: str, situacao: SituacaoEmissao,
                  chave: str | None = None, codigos: list[str] | None = None) -> None:

@@ -15,7 +15,7 @@ import json
 import time
 from collections.abc import Callable
 
-from freedfe.auditoria import RegistroAuditoria
+from freedfe.auditoria import Auditoria
 from freedfe.excecoes import RespostaInvalidaErro
 from freedfe.nfse.cliente_base import ESPERAS_PADRAO, STATUS_REPETIVEIS, ClienteNfseBase
 from freedfe.nfse.envelope import comprimir_b64
@@ -43,7 +43,7 @@ class ClienteSefin(ClienteNfseBase):
     servico = "nfse-sefin"
 
     def __init__(self, configuracao: ConfiguracaoNfse, transporte: TransporteRest,
-                 auditoria: RegistroAuditoria,
+                 auditoria: Auditoria,
                  pausa: Callable[[float], None] = time.sleep,
                  esperas: tuple[float, ...] = ESPERAS_PADRAO,
                  status_dps_existente: frozenset[int] = frozenset({200}),

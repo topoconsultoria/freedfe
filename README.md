@@ -195,7 +195,8 @@ PENDENTE ──> ENVIADA ──201──────────────> AU
 | `sincronizar(max_lotes=200, cnpj_consulta=None)` | ADN por NSU: notas tomadas e eventos fora do ERP. |
 | `convenio(cod_mun)`, `parametros_servico(...)`, `parametros_contribuinte(...)` | Parâmetros municipais com cache de 24 h. |
 | `verificar_pre_emissao(dps)` | Bloqueia município sem convênio (E0037). |
-| `gerar_danfse(chave, destino=None)` | PDF com QR Code e marca d'água de cancelada/substituída. |
+| `gerar_danfse(chave, destino=None)` | PDF com QR Code e marca d'água de cancelada/substituída, gravado em arquivo (num serviço sem pasta, exige `destino`). |
+| `danfse_bytes(chave)` | O mesmo PDF em `bytes`, gerado em memória, sem tocar o disco. |
 
 `dfe.consultar(FiltroConsulta(modelos=["nfse"]))`, `baixar_xmls`, `gerar_pdfs`, `importar_xmls`
 e `sincronizar(["nfse"])` também funcionam para NFS-e. A situação das notas considera os eventos
@@ -244,12 +245,17 @@ sozinho); o `ValidadorXsd` remove as âncoras ao carregar, sem alterar os arquiv
 
 ### Estrutura de dados da NFS-e
 
+É o que as **implementações em arquivo** (o padrão de `FreeDFe`) produzem; cada artefato tem um
+contrato substituível e, num serviço sem pasta, nada disso é gravado (ver
+[Uso em aplicações (sem pasta local)](#uso-em-aplicações-sem-pasta-local)).
+
 ```
 <pasta>/<ambiente>/<cnpj_cpf>/
 ├── _estado/
 │   ├── emissoes_nfse.json     # estado por Id da DPS (situação, chave, erros, tentativas)
 │   ├── emissao_nfse.lock      # um envio concorrente por emitente
 │   ├── nsu_nfse.json          # sequência do ADN (nsu_nfse_<cnpj>.json para outro CNPJ)
+│   ├── chamadas.jsonl         # auditoria sem XML
 │   └── parametros_nfse/<codMun>/convenio.json
 └── nfse/
     ├── indice.json
@@ -459,6 +465,66 @@ Pontos de atenção:
   índice em memória por instância e reescreve o `indice.json` inteiro, o que reproduz a perda de
   atualização do primeiro item acima: use `repositorio=` com um `RepositorioDocumentos` em banco.
 
+### Uso em aplicações (sem pasta local)
+
+`FreeDFe` guarda tudo em uma pasta. Numa aplicação em contêiner, com banco de dados, cofre de
+certificados e armazenamento de objetos, use `criar_servico_nfse`: ele monta o mesmo `ServicoNfse`
+(a mesma API de `dfe.nfse`) **sem parâmetro `pasta`**, com cada peça de persistência injetada.
+
+```python
+from freedfe import Ambiente, CertificadoA1, ConfiguracaoNfseLocal, criar_servico_nfse
+from freedfe.interessado import Interessado
+
+certificado = CertificadoA1(conteudo_pfx, senha)         # bytes vindos do cofre, sem arquivo
+
+servico = criar_servico_nfse(
+    ambiente=Ambiente.PRODUCAO,
+    interessado=Interessado(cnpj="11222333000181"),
+    certificado=certificado,
+    repositorio=RepositorioPostgres(pool, emitente),     # classes da aplicação
+    estado_emissao=EstadoEmissaoPostgres(pool, emitente),
+    travas=lambda recurso: TravaPostgres(dsn, emitente, recurso),
+    estado_nsu=lambda recurso: EstadoNsuPostgres(pool, emitente, recurso),
+    cache_parametros=CacheParametrosPostgres(pool),
+    evidencias=EvidenciasObjetos(bucket, prefixo=emitente),
+    auditoria=AuditoriaPostgres(pool),
+    opcoes=ConfiguracaoNfseLocal(),
+)
+nota = servico.emitir(dps)
+pdf = servico.danfse_bytes(nota.chave)                   # PDF em memória
+```
+
+Sem `pasta`, as **sete** dependências de persistência são obrigatórias; se faltar alguma, o
+construtor levanta `ValidacaoErro` listando todas as que faltam. Com `pasta`, cada uma que não for
+informada recebe a implementação em arquivo.
+
+| Artefato | Contrato | Implementação padrão (em arquivo) | Parâmetro |
+|---|---|---|---|
+| Estado das emissões e numeração | `EstadoEmissao` | `EstadoEmissaoArquivo` (`_estado/emissoes_nfse.json`) | `estado_emissao` |
+| Trava de emissão e de NSU | `Trava` / `FabricaTrava` | `TravaArquivo` (`_estado/<recurso>.lock`) | `travas` |
+| NSU do ADN | `EstadoSequenciaNsu` / `FabricaEstadoNsu` | `EstadoNSU` (`_estado/<recurso>.json`) | `estado_nsu` |
+| Cache de parâmetros municipais | `CacheParametros` | `CacheParametrosArquivo` (`_estado/parametros_nfse`) | `cache_parametros` |
+| Evidências: DPS enviada, resposta bruta e pedidos de evento | `ArmazenamentoEvidencias` | `ArmazenamentoEvidenciasArquivo` (`nfse/dps`, `nfse/eventos_enviados`) | `evidencias` |
+| Auditoria (sem XML) | `Auditoria` | `RegistroAuditoria` (`_estado/chamadas.jsonl`) | `auditoria` |
+| XML das notas e eventos | `RepositorioDocumentos` | `RepositorioArquivos` | `repositorio` |
+| DANFSe | `GeradorPdf.gerar_bytes` | `GeradorPdfPadrao` / `GeradorDanfse` (reportlab) | `danfse_bytes(chave)`; `gerador_pdf` |
+
+- **Evidências são duráveis.** A DPS assinada é gravada **antes** do `POST` e é ela que permite
+  reconciliar sem reenviar: `gravar_dps` só pode retornar depois de a evidência estar confirmada
+  (o padrão em arquivo faz `fsync`). Tentativas e eventos repetidos geram entradas novas, nunca
+  sobrescrevem; a referência devolvida é guardada em `RegistroEmissao.caminho_dps` e
+  `caminho_resposta`.
+- **Transporte.** O padrão é `ClienteRest(certificado, proxy=None)`, criado na primeira chamada de
+  rede. Para usar proxy, `ca_bundle` ou outros prazos, a aplicação passa o próprio `transporte`.
+- **DANFSe.** `danfse_bytes` não usa disco. `GeradorPdf.gerar_bytes` tem um padrão que **usa disco**
+  (diretório temporário); um gerador próprio de DANFSe deve sobrescrevê-lo.
+- **PEM do mTLS.** No Linux, o certificado e a chave PEM ficam em arquivos anônimos em memória
+  (`memfd`, modo 0600, acessados por `/proc/self/fd/<n>`): nada é gravado. Em macOS e Windows, ou se
+  o `memfd` falhar, a biblioteca grava PEM temporários 0600 por alguns milissegundos e os apaga. No
+  contêiner, mantenha o `/tmp` em `tmpfs` para que mesmo esse caso não chegue ao disco.
+- **Trava.** Sem pasta, a trava de arquivo não serve entre contêineres: injete uma `Trava` em banco
+  (ver [Persistência do estado de emissão](#persistência-do-estado-de-emissão-multiprocesso)).
+
 ## Estrutura de dados local
 
 ```
@@ -487,16 +553,18 @@ O XML é gravado exatamente como recebido. Um resumo nunca substitui um XML comp
 | `manifestacao` | Evento, assinatura XMLDSig, envio ao Ambiente Nacional |
 | `assinatura` | XMLDSig por perfil: `PERFIL_NFE` (C14N 1.0, RSA-SHA1) e `PERFIL_NFSE` (Exclusive C14N, RSA-SHA256) |
 | `transporte` | `ClienteSoap` (distribuição) e `ClienteRest` (NFS-e), ambos mTLS TLS 1.2+ |
-| `nfse` | Modelo da DPS, montadores por leiaute, clientes Sefin/ADN/parâmetros, estado de emissão, eventos, `ServicoNfse` |
+| `nfse` | Modelo da DPS, montadores por leiaute, clientes Sefin/ADN/parâmetros, estado de emissão, evidências, cache de parâmetros, eventos, `ServicoNfse` e `criar_servico_nfse` |
+| `auditoria` | `Auditoria` (contrato) e `RegistroAuditoria` (JSON Lines, sem XML) |
 | `documentos` | Leitura dos XMLs e extração dos dados (NF-e, CT-e, MDF-e, resumos, eventos) |
 | `repositorio` | `RepositorioDocumentos` (contrato), `RepositorioArquivos`, filtro, importador |
 | `exportacao` | Exportadores CSV/JSON/XML/XLSX e fábrica por formato |
-| `pdf` | `GeradorPdf` (contrato), BrazilFiscalReport (DANFE/DACTE/DAMDFE) e `GeradorDanfse` (reportlab) |
+| `pdf` | `GeradorPdf` (contrato, com `gerar` e `gerar_bytes`), BrazilFiscalReport (DANFE/DACTE/DAMDFE) e `GeradorDanfse` (reportlab, também em memória) |
 | `servicos` | Endpoints, namespaces e versões dos leiautes (ponto único de atualização) |
 
-`Transporte`, `RepositorioDocumentos`, `GeradorPdf`, `EstadoEmissao`, `Trava` e
-`EstadoSequenciaNsu` são classes abstratas: dá para plugar outro transporte, um repositório ou um
-estado de emissão em PostgreSQL ou outro gerador de PDF sem alterar o restante.
+`Transporte`, `RepositorioDocumentos`, `GeradorPdf`, `EstadoEmissao`, `Trava`,
+`EstadoSequenciaNsu`, `CacheParametros`, `ArmazenamentoEvidencias` e `Auditoria` são classes
+abstratas: dá para plugar outro transporte, um repositório, o estado de emissão ou as evidências em
+PostgreSQL ou em armazenamento de objetos, ou outro gerador de PDF, sem alterar o restante.
 
 ## Base normativa
 

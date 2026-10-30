@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -21,6 +22,20 @@ class GeradorPdf(ABC):
         ``situacao`` é informada apenas para NFS-e (marca d'água de cancelada/substituída);
         geradores que atendam NFS-e devem aceitá-la.
         """
+
+    def gerar_bytes(self, xml: bytes, modelo: ModeloDocumento,
+                    situacao: SituacaoDocumento | None = None) -> bytes:
+        """Gera o PDF do XML completo e o devolve em memória.
+
+        O padrão desta classe **usa disco**: chama ``gerar`` num diretório temporário e lê o
+        arquivo. Geradores que consigam escrever direto em memória (como ``GeradorDanfse``) devem
+        sobrescrever este método; uma aplicação que não admite escrita em disco deve usar apenas
+        geradores que o façam.
+        """
+        argumentos = {} if situacao is None else {"situacao": situacao}
+        with tempfile.TemporaryDirectory(prefix="freedfe_pdf_") as pasta:
+            destino = self.gerar(xml, modelo, Path(pasta) / "documento.pdf", **argumentos)
+            return Path(destino).read_bytes()
 
 
 class GeradorPdfBrazilFiscalReport(GeradorPdf):
@@ -76,6 +91,14 @@ class GeradorPdfPadrao(GeradorPdf):
         if modelo is ModeloDocumento.NFSE:
             return self._gerador_danfse().gerar(xml, modelo, destino, situacao)
         return self._documentos_dfe.gerar(xml, modelo, destino)
+
+    def gerar_bytes(self, xml: bytes, modelo: ModeloDocumento,
+                    situacao: SituacaoDocumento | None = None) -> bytes:
+        """PDF em memória. A NFS-e usa o DANFSe local (sem disco); NF-e, CT-e e MDF-e usam disco."""
+        modelo = ModeloDocumento.normalizar(modelo)
+        if modelo is ModeloDocumento.NFSE:
+            return self._gerador_danfse().gerar_bytes(xml, modelo, situacao)
+        return self._documentos_dfe.gerar_bytes(xml, modelo)
 
     def _gerador_danfse(self) -> GeradorPdf:
         if self._danfse is None:

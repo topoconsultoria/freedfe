@@ -23,6 +23,7 @@ import datetime as dt
 import json
 import logging
 import re
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -145,26 +146,37 @@ class ClienteParametros(ClienteNfseBase):
         return interpretar_parametros(self._requisitar(operacao, "GET", url, **referencias))
 
 
-class CacheParametros:
-    """Cache em JSON por município e consulta, com TTL e uso do valor vencido em caso de falha.
+class CacheParametros(ABC):
+    """Cache de parâmetros por município e consulta, com TTL (*template method*).
+
+    ``obter_ou_buscar`` concentra a regra: devolve o valor em cache enquanto válido; vencido ou
+    com ``atualizar=True``, chama ``buscar`` e grava o resultado. Se ``buscar`` falhar por rede ou
+    resposta inválida e existir um valor guardado, mesmo vencido, usa-o com aviso no log, o que
+    mantém a emissão viável com internet instável. As subclasses só dizem onde o valor fica
+    (``_ler`` e ``_gravar``).
 
     Args:
-        pasta: raiz do cache (``<estado>/parametros_nfse``).
         relogio: relógio UTC injetável.
         ttl: validade do valor (padrão 24 h; a parametrização muda raramente).
     """
 
-    def __init__(self, pasta: str | Path, relogio: Relogio = relogio_utc,
-                 ttl: dt.timedelta = TTL_PADRAO):
-        self._pasta = Path(pasta)
+    def __init__(self, relogio: Relogio = relogio_utc, ttl: dt.timedelta = TTL_PADRAO):
         self._relogio = relogio
         self._ttl = ttl
+
+    @abstractmethod
+    def _ler(self, municipio: str, nome: str) -> tuple[dt.datetime, dict[str, Any]] | None:
+        """Valor guardado e o instante da consulta, ou ``None`` se não existe (ou é ilegível)."""
+
+    @abstractmethod
+    def _gravar(self, municipio: str, nome: str, momento: dt.datetime,
+                dados: dict[str, Any]) -> None:
+        """Guarda ``dados`` consultados em ``momento``, substituindo o valor anterior."""
 
     def obter_ou_buscar(self, municipio: str, nome: str, buscar: Callable[[], dict[str, Any]],
                         atualizar: bool = False) -> dict[str, Any]:
         """Valor em cache ainda válido ou o resultado de ``buscar`` (que é então gravado)."""
-        arquivo = self._pasta / municipio / f"{re.sub(r'[^0-9A-Za-z_.-]', '_', nome)}.json"
-        guardado = self._ler(arquivo)
+        guardado = self._ler(municipio, nome)
         agora = self._relogio()
         if guardado and not atualizar and agora - guardado[0] < self._ttl:
             return guardado[1]
@@ -176,11 +188,31 @@ class CacheParametros:
                                municipio, nome, erro, guardado[0].isoformat())
                 return guardado[1]
             raise
-        self._gravar(arquivo, agora, dados)
+        self._gravar(municipio, nome, agora, dados)
         return dados
 
-    @staticmethod
-    def _ler(arquivo: Path) -> tuple[dt.datetime, dict[str, Any]] | None:
+
+class CacheParametrosArquivo(CacheParametros):
+    """Cache em JSON: ``<pasta>/<município>/<nome saneado>.json``, com escrita atômica.
+
+    Um arquivo corrompido é ignorado e refeito.
+
+    Args:
+        pasta: raiz do cache (``<estado>/parametros_nfse``).
+        relogio: relógio UTC injetável.
+        ttl: validade do valor (padrão 24 h).
+    """
+
+    def __init__(self, pasta: str | Path, relogio: Relogio = relogio_utc,
+                 ttl: dt.timedelta = TTL_PADRAO):
+        super().__init__(relogio, ttl)
+        self._pasta = Path(pasta)
+
+    def _arquivo(self, municipio: str, nome: str) -> Path:
+        return self._pasta / municipio / f"{re.sub(r'[^0-9A-Za-z_.-]', '_', nome)}.json"
+
+    def _ler(self, municipio: str, nome: str) -> tuple[dt.datetime, dict[str, Any]] | None:
+        arquivo = self._arquivo(municipio, nome)
         if not arquivo.exists():
             return None
         try:
@@ -189,8 +221,9 @@ class CacheParametros:
         except (ValueError, KeyError, TypeError):
             return None  # cache corrompido é ignorado e refeito
 
-    @staticmethod
-    def _gravar(arquivo: Path, momento: dt.datetime, dados: dict[str, Any]) -> None:
+    def _gravar(self, municipio: str, nome: str, momento: dt.datetime,
+                dados: dict[str, Any]) -> None:
+        arquivo = self._arquivo(municipio, nome)
         arquivo.parent.mkdir(parents=True, exist_ok=True)
         temporario = arquivo.with_suffix(".tmp")
         temporario.write_text(json.dumps(
