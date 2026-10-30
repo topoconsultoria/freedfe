@@ -10,9 +10,15 @@ from pathlib import Path
 from freedfe.auditoria import RegistroAuditoria
 from freedfe.certificado import CertificadoA1, InfoCertificado
 from freedfe.distribuicao.cliente import ClienteDistribuicao, ResultadoSincronizacao
-from freedfe.distribuicao.estado import EstadoNSU, Relogio, relogio_utc
+from freedfe.distribuicao.estado import (
+    EstadoNSU,
+    EstadoSequenciaNsu,
+    FabricaEstadoNsu,
+    Relogio,
+    relogio_utc,
+)
 from freedfe.distribuicao.retorno import RetornoDistribuicao
-from freedfe.distribuicao.trava import TravaArquivo
+from freedfe.distribuicao.trava import FabricaTrava, TravaArquivo
 from freedfe.documentos.resumo import ResumoDocumento
 from freedfe.excecoes import CertificadoErro, FreeDFeErro, ValidacaoErro
 from freedfe.exportacao.fabrica import FabricaExportador
@@ -20,6 +26,7 @@ from freedfe.exportacao.formato import FormatoSaida
 from freedfe.interessado import Interessado
 from freedfe.manifestacao.assinatura import AssinadorXml
 from freedfe.manifestacao.cliente import ClienteManifestacao, RetornoManifestacao
+from freedfe.nfse.estado_emissao import EstadoEmissao
 from freedfe.nfse.servico import ConfiguracaoNfseLocal, ServicoNfse
 from freedfe.pdf.gerador import GeradorPdf, GeradorPdfPadrao
 from freedfe.repositorio.arquivos import RepositorioArquivos
@@ -72,6 +79,9 @@ class FreeDFe:
         transporte, repositorio, gerador_pdf, relogio: dependências substituíveis.
         transporte_rest: transporte REST da NFS-e Nacional (padrão: mTLS com o certificado).
         config_nfse: opções da NFS-e (leiaute, XSD, prefixo da rota, URL do QR Code).
+        estado_emissao_nfse, travas_nfse, estado_nsu_nfse: persistência injetável da NFS-e
+            para vários processos ou contêineres (estado das emissões, fábrica de travas por
+            recurso e fábrica do estado de NSU do ADN). Padrão: arquivos em ``_estado``.
         proxy: proxy ``http://`` do transporte padrão. ``"auto"`` (padrão) usa ``HTTPS_PROXY`` e
             ``NO_PROXY`` do ambiente; ``None`` nunca usa proxy. O mTLS segue fim a fim (túnel
             ``CONNECT``); proxies que interceptam TLS impedem o certificado cliente de chegar.
@@ -88,7 +98,10 @@ class FreeDFe:
                  gerador_pdf: GeradorPdf | None = None, relogio: Relogio = relogio_utc,
                  pausa_entre_lotes: float = 1.0, transporte_rest: TransporteRest | None = None,
                  config_nfse: ConfiguracaoNfseLocal | None = None,
-                 proxy: str | None = PROXY_AUTOMATICO):
+                 proxy: str | None = PROXY_AUTOMATICO,
+                 estado_emissao_nfse: EstadoEmissao | None = None,
+                 travas_nfse: FabricaTrava | None = None,
+                 estado_nsu_nfse: FabricaEstadoNsu | None = None):
         self.interessado = Interessado(cnpj=cnpj, cpf=cpf, uf=uf)
         self.ambiente = Ambiente(ambiente)
         self.pasta = Path(pasta) / self.ambiente.nome_pasta / self.interessado.documento
@@ -98,6 +111,9 @@ class FreeDFe:
         self._transporte = transporte
         self._transporte_rest = transporte_rest
         self._config_nfse = config_nfse
+        self._estado_emissao_nfse = estado_emissao_nfse
+        self._travas_nfse = travas_nfse
+        self._estado_nsu_nfse = estado_nsu_nfse
         self._servico_nfse: ServicoNfse | None = None
         self.repositorio = repositorio or RepositorioArquivos(
             self.pasta, self.interessado.documento)
@@ -266,7 +282,9 @@ class FreeDFe:
                 repositorio=self.repositorio, auditoria=self._auditoria,
                 obter_certificado=self._exigir_certificado,
                 obter_transporte=self._obter_transporte_rest, relogio=self._relogio,
-                opcoes=self._config_nfse, gerador_pdf=self._gerador_pdf)
+                opcoes=self._config_nfse, gerador_pdf=self._gerador_pdf,
+                estado_emissao=self._estado_emissao_nfse, travas=self._travas_nfse,
+                estado_nsu=self._estado_nsu_nfse)
         return self._servico_nfse
 
     # ------------------------------------------------------------------
@@ -313,8 +331,10 @@ class FreeDFe:
     def _arquivo_estado(self, modelo: ModeloDocumento) -> Path:
         return self.pasta / "_estado" / f"nsu_{modelo.value}.json"
 
-    def _estado(self, modelo: ModeloDocumento) -> EstadoNSU:
+    def _estado(self, modelo: ModeloDocumento) -> EstadoSequenciaNsu:
         if modelo is ModeloDocumento.NFSE:
+            if self._estado_nsu_nfse is not None:
+                return self._estado_nsu_nfse("nsu_nfse")
             bloqueio = (self._config_nfse or ConfiguracaoNfseLocal()).bloqueio_adn_segundos
             return EstadoNSU(self._arquivo_estado(modelo), self._relogio, bloqueio)
         return EstadoNSU(self._arquivo_estado(modelo), self._relogio)

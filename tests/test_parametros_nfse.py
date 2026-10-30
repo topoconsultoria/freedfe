@@ -9,7 +9,7 @@ from freedfe import Ambiente, FreeDFe
 from freedfe.auditoria import RegistroAuditoria
 from freedfe.excecoes import ComunicacaoErro, RejeicaoNfseErro, ValidacaoErro
 from freedfe.nfse.parametros import (
-    CacheParametros,
+    CacheParametrosArquivo,
     ClienteParametros,
     Convenio,
     interpretar_parametros,
@@ -133,7 +133,7 @@ def relogio():
 
 
 def test_cache_valido_nao_busca(tmp_path, relogio):
-    cache = CacheParametros(tmp_path, relogio)
+    cache = CacheParametrosArquivo(tmp_path, relogio)
     chamadas = []
     buscar = lambda: chamadas.append(1) or {"v": len(chamadas)}  # noqa: E731
     assert cache.obter_ou_buscar(MUNICIPIO, "convenio", buscar) == {"v": 1}
@@ -143,7 +143,7 @@ def test_cache_valido_nao_busca(tmp_path, relogio):
 
 
 def test_cache_expirado_e_atualizar_buscam_de_novo(tmp_path, relogio):
-    cache = CacheParametros(tmp_path, relogio)
+    cache = CacheParametrosArquivo(tmp_path, relogio)
     chamadas = []
     buscar = lambda: chamadas.append(1) or {"v": len(chamadas)}  # noqa: E731
     cache.obter_ou_buscar(MUNICIPIO, "convenio", buscar)
@@ -153,7 +153,7 @@ def test_cache_expirado_e_atualizar_buscam_de_novo(tmp_path, relogio):
 
 
 def test_cache_vencido_e_usado_quando_a_consulta_falha(tmp_path, relogio, caplog):
-    cache = CacheParametros(tmp_path, relogio)
+    cache = CacheParametrosArquivo(tmp_path, relogio)
     cache.obter_ou_buscar(MUNICIPIO, "convenio", lambda: {"v": 1})
     relogio.avancar(days=3)
 
@@ -167,7 +167,7 @@ def test_cache_vencido_e_usado_quando_a_consulta_falha(tmp_path, relogio, caplog
 
 
 def test_rejeicao_nao_mascarada_pelo_cache(tmp_path, relogio):
-    cache = CacheParametros(tmp_path, relogio)
+    cache = CacheParametrosArquivo(tmp_path, relogio)
     cache.obter_ou_buscar(MUNICIPIO, "convenio", lambda: {"v": 1})
     relogio.avancar(days=3)
 
@@ -179,7 +179,7 @@ def test_rejeicao_nao_mascarada_pelo_cache(tmp_path, relogio):
 
 
 def test_cache_corrompido_e_refeito(tmp_path, relogio):
-    cache = CacheParametros(tmp_path, relogio)
+    cache = CacheParametrosArquivo(tmp_path, relogio)
     cache.obter_ou_buscar(MUNICIPIO, "convenio", lambda: {"v": 1})
     (tmp_path / MUNICIPIO / "convenio.json").write_text("{nao e json")
     assert cache.obter_ou_buscar(MUNICIPIO, "convenio", lambda: {"v": 2}) == {"v": 2}

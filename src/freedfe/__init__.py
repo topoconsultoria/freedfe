@@ -16,8 +16,11 @@ NFS-e Nacional (emissão, consulta, cancelamento e DANFSe)::
 """
 
 from freedfe._versao import __version__
+from freedfe.auditoria import Auditoria, RegistroAuditoria
 from freedfe.certificado import CertificadoA1, InfoCertificado
 from freedfe.distribuicao.cliente import ResultadoSincronizacao
+from freedfe.distribuicao.estado import EstadoNSU, EstadoSequenciaNsu
+from freedfe.distribuicao.trava import Trava, TravaArquivo
 from freedfe.documentos.resumo import EventoDocumento, ResumoDocumento
 from freedfe.excecoes import (
     CertificadoErro,
@@ -34,8 +37,15 @@ from freedfe.excecoes import (
 )
 from freedfe.exportacao.formato import FormatoSaida
 from freedfe.fachada import FreeDFe, ResultadoGeracaoPdf
-from freedfe.nfse.estado_emissao import SituacaoEmissao
+from freedfe.nfse.estado_emissao import (
+    EstadoEmissao,
+    EstadoEmissaoArquivo,
+    RegistroEmissao,
+    SituacaoEmissao,
+)
 from freedfe.nfse.eventos import MotivoCancelamento, TipoEventoNfse
+from freedfe.nfse.evidencias import ArmazenamentoEvidencias, ArmazenamentoEvidenciasArquivo
+from freedfe.nfse.fabrica import criar_servico_nfse
 from freedfe.nfse.leiaute import VersaoLeiaute
 from freedfe.nfse.modelo import (
     DiferimentoIbsCbs,
@@ -60,6 +70,7 @@ from freedfe.nfse.modelo import (
     TributacaoIssqn,
     Valores,
 )
+from freedfe.nfse.parametros import CacheParametros, CacheParametrosArquivo
 from freedfe.nfse.resposta import RetornoEmissao, RetornoEventoNfse
 from freedfe.nfse.servico import ConfiguracaoNfseLocal, ServicoNfse
 from freedfe.repositorio.filtro import Direcao, FiltroConsulta
@@ -67,6 +78,11 @@ from freedfe.tipos import Ambiente, ModeloDocumento, SituacaoDocumento
 
 __all__ = [
     "Ambiente",
+    "ArmazenamentoEvidencias",
+    "ArmazenamentoEvidenciasArquivo",
+    "Auditoria",
+    "CacheParametros",
+    "CacheParametrosArquivo",
     "CertificadoA1",
     "CertificadoErro",
     "ComunicacaoErro",
@@ -78,6 +94,10 @@ __all__ = [
     "EmissaoIncertaErro",
     "Endereco",
     "ErroNfse",
+    "EstadoEmissao",
+    "EstadoEmissaoArquivo",
+    "EstadoNSU",
+    "EstadoSequenciaNsu",
     "EventoDocumento",
     "FiltroConsulta",
     "FormatoSaida",
@@ -95,6 +115,8 @@ __all__ = [
     "Prestador",
     "RegimeApuracaoSimples",
     "RegimeEspecialTributacao",
+    "RegistroAuditoria",
+    "RegistroEmissao",
     "RejeicaoNfseErro",
     "RespostaInvalidaErro",
     "ResultadoGeracaoPdf",
@@ -113,6 +135,8 @@ __all__ = [
     "TipoEventoNfse",
     "Tomador",
     "TotTrib",
+    "Trava",
+    "TravaArquivo",
     "TribFederal",
     "TribMunicipal",
     "TributacaoIssqn",
@@ -120,4 +144,5 @@ __all__ = [
     "Valores",
     "VersaoLeiaute",
     "__version__",
+    "criar_servico_nfse",
 ]

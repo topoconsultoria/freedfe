@@ -176,7 +176,9 @@ PENDENTE ──> ENVIADA ──201──────────────> AU
 - Emitir de novo uma DPS `AUTORIZADA` devolve a nota gravada, sem chamar a Sefin.
 - Com emissão incerta pendente na série, a **numeração automática é recusada** (geraria uma
   segunda nota): chame `reconciliar_pendentes()` ou informe o número explicitamente.
-- Um envio por vez por emitente (trava de arquivo), para preservar a numeração.
+- Um envio por vez por emitente (trava de arquivo por padrão; para vários processos ou
+  contêineres, veja [Persistência do estado de emissão](#persistência-do-estado-de-emissão-multiprocesso)),
+  para preservar a numeração.
 - A auditoria (`_estado/chamadas.jsonl`) guarda status, códigos de erro e Ids, **nunca XML**.
 
 ### Métodos de `dfe.nfse`
@@ -193,7 +195,8 @@ PENDENTE ──> ENVIADA ──201──────────────> AU
 | `sincronizar(max_lotes=200, cnpj_consulta=None)` | ADN por NSU: notas tomadas e eventos fora do ERP. |
 | `convenio(cod_mun)`, `parametros_servico(...)`, `parametros_contribuinte(...)` | Parâmetros municipais com cache de 24 h. |
 | `verificar_pre_emissao(dps)` | Bloqueia município sem convênio (E0037). |
-| `gerar_danfse(chave, destino=None)` | PDF com QR Code e marca d'água de cancelada/substituída. |
+| `gerar_danfse(chave, destino=None)` | PDF com QR Code e marca d'água de cancelada/substituída, gravado em arquivo (num serviço sem pasta, exige `destino`). |
+| `danfse_bytes(chave)` | O mesmo PDF em `bytes`, gerado em memória, sem tocar o disco. |
 
 `dfe.consultar(FiltroConsulta(modelos=["nfse"]))`, `baixar_xmls`, `gerar_pdfs`, `importar_xmls`
 e `sincronizar(["nfse"])` também funcionam para NFS-e. A situação das notas considera os eventos
@@ -242,12 +245,17 @@ sozinho); o `ValidadorXsd` remove as âncoras ao carregar, sem alterar os arquiv
 
 ### Estrutura de dados da NFS-e
 
+É o que as **implementações em arquivo** (o padrão de `FreeDFe`) produzem; cada artefato tem um
+contrato substituível e, num serviço sem pasta, nada disso é gravado (ver
+[Uso em aplicações (sem pasta local)](#uso-em-aplicações-sem-pasta-local)).
+
 ```
 <pasta>/<ambiente>/<cnpj_cpf>/
 ├── _estado/
 │   ├── emissoes_nfse.json     # estado por Id da DPS (situação, chave, erros, tentativas)
 │   ├── emissao_nfse.lock      # um envio concorrente por emitente
 │   ├── nsu_nfse.json          # sequência do ADN (nsu_nfse_<cnpj>.json para outro CNPJ)
+│   ├── chamadas.jsonl         # auditoria sem XML
 │   └── parametros_nfse/<codMun>/convenio.json
 └── nfse/
     ├── indice.json
@@ -325,6 +333,198 @@ existem no XML para o emitente; para tomador, destinatário e intermediário apa
 (Exclusive C14N + RSA-SHA256) na produção restrita **sem gerar nota**. O veredito é estrito: só a
 rejeição esperada E0712 conta como sucesso, e qualquer outro resultado sai com código 1.
 
+### Persistência do estado de emissão (multiprocesso)
+
+Por padrão, o estado fica em arquivos de `<pasta>/_estado`: o JSON das emissões, a trava
+`emissao_nfse.lock` e o NSU do ADN. Isso basta para **um** processo, ou vários que dividem o mesmo
+disco. Com vários workers ou contêineres sem volume compartilhado falha de três formas:
+
+- reescrever o JSON inteiro faz um processo sobrescrever a alteração do outro;
+- `max(numero) + 1` calculado em memória entrega o mesmo número a dois processos (E0014);
+- `O_EXCL` só exclui quem enxerga o mesmo sistema de arquivos.
+
+Para esses cenários, a persistência é injetável: três contratos, com a implementação em arquivo como
+padrão. **Nenhum backend de banco de dados faz parte da biblioteca**; a aplicação que a usa
+implementa os contratos (a freedfe não ganha dependência nova).
+
+| Contrato | Padrão | O que o backend precisa garantir | Injeção em `FreeDFe` |
+|---|---|---|---|
+| `EstadoEmissao` | `EstadoEmissaoArquivo` | `reservar_proximo` **atômico**: duas chamadas concorrentes na mesma série nunca recebem o mesmo número, mesmo sem trava. `reservar` recusa DPS `ENVIADA`/`INCERTA`/`AUTORIZADA` e reabre `PENDENTE`/`REJEITADA` (limpa `erros` e `motivo`, preserva `tentativas` e `ts_reserva`). `marcar` recusa campo desconhecido **antes** de alterar. `descartar` só remove `PENDENTE` com `tentativas == 0`. `listar` ordena por `(serie, numero, id_dps)`. Cada chamada lê a fonte atual, sem cache. | `estado_emissao_nfse=` |
+| `Trava` (`FabricaTrava`) | `TravaArquivo` | Exclusão mútua **por recurso** entre todos os processos. Quem não obtém a trava recebe `SincronizacaoEmAndamentoErro`, de imediato ou após um timeout. Libera mesmo com exceção no bloco. | `travas_nfse=` (recebe `emissao_nfse`, `nsu_nfse` ou `nsu_nfse_<cnpj>`) |
+| `EstadoSequenciaNsu` (`FabricaEstadoNsu`) | `EstadoNSU` | Só implementa `_ler_dados()` e `_gravar_dados(dados)`; as regras de bloqueio e de consultas pontuais ficam na base. A gravação deve ser atômica. | `estado_nsu_nfse=` (recebe `nsu_nfse` ou `nsu_nfse_<cnpj>`) |
+
+```python
+dfe = FreeDFe(certificado, senha, cnpj="11222333000181", pasta="./dados",
+              estado_emissao_nfse=EstadoEmissaoPostgres(pool, emitente),     # classes da aplicação
+              travas_nfse=lambda recurso: TravaPostgres(dsn, emitente, recurso),
+              estado_nsu_nfse=lambda recurso: EstadoNsuPostgres(pool, emitente, recurso))
+```
+
+A regra de cada operação está nos auxiliares concretos de `EstadoEmissao` (`_validar_reserva`,
+`_registro_reservado`, `_validar_descarte`, `_aplicar_marcacao`, `_agora`): reutilize-os para não
+copiar a máquina de estados. A suíte `tests/contrato_estado_emissao.py` (`ContratoEstadoEmissao`)
+verifica o contrato; herde-a e implemente a fixture `criar_estado`.
+
+**Pseudocódigo PostgreSQL** (ilustrativo; não faz parte da biblioteca):
+
+```sql
+CREATE TABLE nfse_emissao (
+    emitente         varchar(14) NOT NULL,            -- CNPJ/CPF do emitente
+    id_dps           varchar(45) NOT NULL,
+    serie            integer     NOT NULL,
+    numero           bigint      NOT NULL,
+    situacao         text        NOT NULL
+                     CHECK (situacao IN ('pendente','enviada','autorizada','rejeitada','incerta')),
+    chave            varchar(50),
+    erros            jsonb       NOT NULL DEFAULT '[]',
+    motivo           text,
+    tentativas       integer     NOT NULL DEFAULT 0,
+    caminho_dps      text,
+    caminho_resposta text,
+    ts_reserva       timestamptz,
+    ts_envio         timestamptz,
+    ts_resposta      timestamptz,
+    UNIQUE (emitente, id_dps),
+    UNIQUE (emitente, serie, numero)                  -- a garantia final contra número repetido
+);
+```
+
+```python
+class EstadoEmissaoPostgres(EstadoEmissao):
+    def reservar_proximo(self, serie, montar_id):
+        # Transação CURTA: só esta operação, sem nenhuma chamada HTTP dentro.
+        with self._conexao.transaction():
+            # Serializa a numeração do (emitente, série); liberado no fim da transação.
+            self._exec("SELECT pg_advisory_xact_lock(hashtext(%s || ':' || %s))",
+                       emitente, str(serie))
+            numero = self._exec("""SELECT COALESCE(MAX(numero), 0) + 1 FROM nfse_emissao
+                                    WHERE emitente = %s AND serie = %s""", emitente, serie)
+            registro = self._registro_reservado(None, montar_id(numero), serie, numero)
+            self._inserir(registro)       # INSERT; a UNIQUE rejeita qualquer corrida que escape
+            return registro
+
+    def reservar(self, id_dps, serie, numero):
+        with self._conexao.transaction():
+            existente = self._ler(id_dps, para_atualizar=True)   # SELECT ... FOR UPDATE
+            self._validar_reserva(existente)
+            registro = self._registro_reservado(existente, id_dps, serie, numero)
+            self._gravar(registro)                               # INSERT ou UPDATE
+            return registro
+
+    def marcar(self, id_dps, situacao, **dados):
+        with self._conexao.transaction():
+            registro = self._ler(id_dps, para_atualizar=True)    # KeyError se não existir
+            self._aplicar_marcacao(registro, situacao, dados)    # valida antes de alterar
+            self._gravar(registro)
+            return registro
+
+    def descartar(self, id_dps):
+        with self._conexao.transaction():
+            self._validar_descarte(id_dps, self._ler(id_dps, para_atualizar=True))
+            self._exec("DELETE FROM nfse_emissao WHERE emitente = %s AND id_dps = %s",
+                       emitente, id_dps)
+
+
+class TravaPostgres(Trava):
+    """Trava de SESSÃO: dura todo o POST à Sefin, por isso não pode viver numa transação."""
+
+    def __enter__(self):
+        self._conexao = psycopg.connect(self._dsn, autocommit=True)   # dedicada, fora do pool
+        if not self._exec("SELECT pg_try_advisory_lock(%s)", self._chave):
+            self._conexao.close()
+            raise SincronizacaoEmAndamentoErro(f"{self._recurso} em uso por outro processo.")
+        return self
+
+    def __exit__(self, *_excecao):
+        try:
+            self._exec("SELECT pg_advisory_unlock(%s)", self._chave)
+        finally:
+            self._conexao.close()
+```
+
+Pontos de atenção:
+
+- **Não mantenha uma transação aberta durante a chamada HTTP à Sefin.** É um anti-padrão: a
+  conexão fica presa por todo o timeout da emissão, a sessão fica *idle in transaction* (o
+  `idle_in_transaction_session_timeout` a derruba), o pool se esgota e o vácuo pode ficar impedido
+  de remover linhas mortas (*bloat*). É por isso que a trava de emissão é um *advisory lock* de **sessão** numa
+  conexão dedicada, e a reserva do número é uma transação curta, já confirmada antes do envio.
+- O *advisory lock* de `reservar_proximo` apenas serializa quem disputa a mesma série. Colisão do
+  `hashtext` (32 bits) só causa espera desnecessária; quem garante a unicidade é a
+  `UNIQUE (emitente, serie, numero)`. Já na trava de sessão uma colisão geraria um falso
+  "em andamento" entre recursos distintos: derive a chave de 64 bits (por exemplo, dos 8 primeiros
+  bytes de um SHA-256 de `emitente:recurso`).
+- A trava de sessão não funciona atrás de um pooler em modo *transaction* (como o PgBouncer): a
+  conexão dedicada deve ir direto ao PostgreSQL. Se o processo morre, o servidor libera a trava ao
+  encerrar a sessão, sem o prazo de 2 horas do arquivo (configure o TCP *keepalive* para que uma
+  queda de rede encerre a sessão).
+- A emissão que falha **antes** do envio (XSD, convênio, assinatura, gravação da evidência) chama
+  `descartar` e devolve o número reservado; depois de `ENVIADA` o registro é evidência e nunca é
+  removido.
+- O repositório de XML também precisa suportar vários processos. `RepositorioArquivos` mantém o
+  índice em memória por instância e reescreve o `indice.json` inteiro, o que reproduz a perda de
+  atualização do primeiro item acima: use `repositorio=` com um `RepositorioDocumentos` em banco.
+
+### Uso em aplicações (sem pasta local)
+
+`FreeDFe` guarda tudo em uma pasta. Numa aplicação em contêiner, com banco de dados, cofre de
+certificados e armazenamento de objetos, use `criar_servico_nfse`: ele monta o mesmo `ServicoNfse`
+(a mesma API de `dfe.nfse`) **sem parâmetro `pasta`**, com cada peça de persistência injetada.
+
+```python
+from freedfe import Ambiente, CertificadoA1, ConfiguracaoNfseLocal, criar_servico_nfse
+from freedfe.interessado import Interessado
+
+certificado = CertificadoA1(conteudo_pfx, senha)         # bytes vindos do cofre, sem arquivo
+
+servico = criar_servico_nfse(
+    ambiente=Ambiente.PRODUCAO,
+    interessado=Interessado(cnpj="11222333000181"),
+    certificado=certificado,
+    repositorio=RepositorioPostgres(pool, emitente),     # classes da aplicação
+    estado_emissao=EstadoEmissaoPostgres(pool, emitente),
+    travas=lambda recurso: TravaPostgres(dsn, emitente, recurso),
+    estado_nsu=lambda recurso: EstadoNsuPostgres(pool, emitente, recurso),
+    cache_parametros=CacheParametrosPostgres(pool),
+    evidencias=EvidenciasObjetos(bucket, prefixo=emitente),
+    auditoria=AuditoriaPostgres(pool),
+    opcoes=ConfiguracaoNfseLocal(),
+)
+nota = servico.emitir(dps)
+pdf = servico.danfse_bytes(nota.chave)                   # PDF em memória
+```
+
+Sem `pasta`, as **sete** dependências de persistência são obrigatórias; se faltar alguma, o
+construtor levanta `ValidacaoErro` listando todas as que faltam. Com `pasta`, cada uma que não for
+informada recebe a implementação em arquivo.
+
+| Artefato | Contrato | Implementação padrão (em arquivo) | Parâmetro |
+|---|---|---|---|
+| Estado das emissões e numeração | `EstadoEmissao` | `EstadoEmissaoArquivo` (`_estado/emissoes_nfse.json`) | `estado_emissao` |
+| Trava de emissão e de NSU | `Trava` / `FabricaTrava` | `TravaArquivo` (`_estado/<recurso>.lock`) | `travas` |
+| NSU do ADN | `EstadoSequenciaNsu` / `FabricaEstadoNsu` | `EstadoNSU` (`_estado/<recurso>.json`) | `estado_nsu` |
+| Cache de parâmetros municipais | `CacheParametros` | `CacheParametrosArquivo` (`_estado/parametros_nfse`) | `cache_parametros` |
+| Evidências: DPS enviada, resposta bruta e pedidos de evento | `ArmazenamentoEvidencias` | `ArmazenamentoEvidenciasArquivo` (`nfse/dps`, `nfse/eventos_enviados`) | `evidencias` |
+| Auditoria (sem XML) | `Auditoria` | `RegistroAuditoria` (`_estado/chamadas.jsonl`) | `auditoria` |
+| XML das notas e eventos | `RepositorioDocumentos` | `RepositorioArquivos` | `repositorio` |
+| DANFSe | `GeradorPdf.gerar_bytes` | `GeradorPdfPadrao` / `GeradorDanfse` (reportlab) | `danfse_bytes(chave)`; `gerador_pdf` |
+
+- **Evidências são duráveis.** A DPS assinada é gravada **antes** do `POST` e é ela que permite
+  reconciliar sem reenviar: `gravar_dps` só pode retornar depois de a evidência estar confirmada
+  (o padrão em arquivo faz `fsync`). Tentativas e eventos repetidos geram entradas novas, nunca
+  sobrescrevem; a referência devolvida é guardada em `RegistroEmissao.caminho_dps` e
+  `caminho_resposta`.
+- **Transporte.** O padrão é `ClienteRest(certificado, proxy=None)`, criado na primeira chamada de
+  rede. Para usar proxy, `ca_bundle` ou outros prazos, a aplicação passa o próprio `transporte`.
+- **DANFSe.** `danfse_bytes` não usa disco. `GeradorPdf.gerar_bytes` tem um padrão que **usa disco**
+  (diretório temporário); um gerador próprio de DANFSe deve sobrescrevê-lo.
+- **PEM do mTLS.** No Linux, o certificado e a chave PEM ficam em arquivos anônimos em memória
+  (`memfd`, modo 0600, acessados por `/proc/self/fd/<n>`): nada é gravado. Em macOS e Windows, ou se
+  o `memfd` falhar, a biblioteca grava PEM temporários 0600 por alguns milissegundos e os apaga. No
+  contêiner, mantenha o `/tmp` em `tmpfs` para que mesmo esse caso não chegue ao disco.
+- **Trava.** Sem pasta, a trava de arquivo não serve entre contêineres: injete uma `Trava` em banco
+  (ver [Persistência do estado de emissão](#persistência-do-estado-de-emissão-multiprocesso)).
+
 ## Estrutura de dados local
 
 ```
@@ -353,15 +553,18 @@ O XML é gravado exatamente como recebido. Um resumo nunca substitui um XML comp
 | `manifestacao` | Evento, assinatura XMLDSig, envio ao Ambiente Nacional |
 | `assinatura` | XMLDSig por perfil: `PERFIL_NFE` (C14N 1.0, RSA-SHA1) e `PERFIL_NFSE` (Exclusive C14N, RSA-SHA256) |
 | `transporte` | `ClienteSoap` (distribuição) e `ClienteRest` (NFS-e), ambos mTLS TLS 1.2+ |
-| `nfse` | Modelo da DPS, montadores por leiaute, clientes Sefin/ADN/parâmetros, estado de emissão, eventos, `ServicoNfse` |
+| `nfse` | Modelo da DPS, montadores por leiaute, clientes Sefin/ADN/parâmetros, estado de emissão, evidências, cache de parâmetros, eventos, `ServicoNfse` e `criar_servico_nfse` |
+| `auditoria` | `Auditoria` (contrato) e `RegistroAuditoria` (JSON Lines, sem XML) |
 | `documentos` | Leitura dos XMLs e extração dos dados (NF-e, CT-e, MDF-e, resumos, eventos) |
 | `repositorio` | `RepositorioDocumentos` (contrato), `RepositorioArquivos`, filtro, importador |
 | `exportacao` | Exportadores CSV/JSON/XML/XLSX e fábrica por formato |
-| `pdf` | `GeradorPdf` (contrato), BrazilFiscalReport (DANFE/DACTE/DAMDFE) e `GeradorDanfse` (reportlab) |
+| `pdf` | `GeradorPdf` (contrato, com `gerar` e `gerar_bytes`), BrazilFiscalReport (DANFE/DACTE/DAMDFE) e `GeradorDanfse` (reportlab, também em memória) |
 | `servicos` | Endpoints, namespaces e versões dos leiautes (ponto único de atualização) |
 
-`Transporte`, `RepositorioDocumentos` e `GeradorPdf` são classes abstratas: dá para plugar outro
-transporte, um repositório em PostgreSQL ou outro gerador de PDF sem alterar o restante.
+`Transporte`, `RepositorioDocumentos`, `GeradorPdf`, `EstadoEmissao`, `Trava`,
+`EstadoSequenciaNsu`, `CacheParametros`, `ArmazenamentoEvidencias` e `Auditoria` são classes
+abstratas: dá para plugar outro transporte, um repositório, o estado de emissão ou as evidências em
+PostgreSQL ou em armazenamento de objetos, ou outro gerador de PDF, sem alterar o restante.
 
 ## Base normativa
 

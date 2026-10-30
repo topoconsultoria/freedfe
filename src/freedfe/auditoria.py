@@ -1,13 +1,26 @@
-"""Trilha de auditoria das chamadas aos Web Services (JSON Lines)."""
+"""Trilha de auditoria das chamadas aos Web Services: contrato e implementação em JSON Lines."""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 
-class RegistroAuditoria:
+class Auditoria(ABC):
+    """Contrato da trilha de auditoria: um registro por chamada ou por conclusão de emissão.
+
+    Os registros guardam códigos, status, Ids e durações, **nunca XML** (contém CPF e valores).
+    Uma falha de gravação deve ser propagada, não engolida: a trilha é evidência.
+    """
+
+    @abstractmethod
+    def registrar(self, **dados) -> None:
+        """Registra uma entrada com os campos informados (a implementação acrescenta o instante)."""
+
+
+class RegistroAuditoria(Auditoria):
     """Acrescenta uma linha JSON por chamada em ``chamadas.jsonl``.
 
     O arquivo é somente-acréscimo: serve para rastrear cStat, NSU enviado/recebido

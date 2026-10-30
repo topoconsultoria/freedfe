@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "freedfe"
-version = "0.2.0"
+version = "0.3.0"
 description = "Distribuição DF-e (NF-e, CT-e, MDF-e) por CNPJ/CPF e NFS-e Nacional: emissão, consulta, cancelamento e DANFSe em PDF com QR Code."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -54,4 +54,5 @@ ignore = ["N818"]  # exceções seguem a nomenclatura em português (sufixo "Err
 
 [tool.ruff.lint.isort]
 known-first-party = ["freedfe"]
-known-local-folder = ["conftest", "fabrica_xml", "fabrica_nfse"]
+known-local-folder = ["conftest", "fabrica_xml", "fabrica_nfse", "contrato_estado_emissao",
+                      "memoria_nfse"]

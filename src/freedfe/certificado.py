@@ -105,18 +105,36 @@ class CertificadoA1:
 
     @contextlib.contextmanager
     def arquivos_pem(self) -> Iterator[tuple[str, str]]:
-        """Grava certificado e chave em PEM temporários (0600) e os remove ao final.
+        """Disponibiliza certificado e chave como PEM por caminho, sem deixar rastro em disco.
+
+        No Linux (``os.memfd_create`` e ``/proc/self/fd`` disponíveis), os dois PEM ficam em
+        arquivos anônimos em memória (``memfd`` com ``MFD_CLOEXEC`` e modo 0600) e os caminhos
+        devolvidos são ``/proc/self/fd/<fd>``: nada é gravado em disco. Em outros sistemas, ou se
+        o ``memfd`` falhar, grava PEM temporários (0600) e os remove ao final; nesse caso a chave
+        privada existe em disco por milissegundos, por isso prefira um ``/tmp`` em ``tmpfs``.
+
+        Os caminhos só valem dentro do bloco ``with`` e no processo que o abriu.
 
         Yields:
             ``(caminho_cert_pem, caminho_chave_pem)`` para ``ssl.SSLContext.load_cert_chain``.
         """
+        cadeia = self._cadeia_pem()
+        chave = self._chave.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+        descritores = _pem_em_memfd(cadeia, chave)
+        if descritores is not None:
+            try:
+                yield tuple(f"/proc/self/fd/{fd}" for fd in descritores)
+            finally:
+                for fd in descritores:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+            return
         pasta = tempfile.mkdtemp(prefix="freedfe_")
         caminho_cert = os.path.join(pasta, "cert.pem")
         caminho_chave = os.path.join(pasta, "key.pem")
         try:
-            _gravar_privado(caminho_cert, self._cadeia_pem())
-            _gravar_privado(caminho_chave, self._chave.private_bytes(
-                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+            _gravar_privado(caminho_cert, cadeia)
+            _gravar_privado(caminho_chave, chave)
             yield caminho_cert, caminho_chave
         finally:
             for caminho in (caminho_cert, caminho_chave):
@@ -144,6 +162,31 @@ class CertificadoA1:
                 elif nome.type_id.dotted_string == OID_CPF and len(conteudo) >= 19:
                     cpf = conteudo[8:19]
         return cnpj, cpf
+
+
+def _pem_em_memfd(*conteudos: bytes) -> list[int] | None:
+    """Um ``memfd`` (modo 0600, ``MFD_CLOEXEC``) por conteúdo, ou ``None`` se não for possível.
+
+    ``None`` quando o sistema não tem ``os.memfd_create`` ou ``/proc/self/fd``, ou quando qualquer
+    etapa falha com ``OSError``; nesse caso nenhum descritor fica aberto.
+    """
+    if not hasattr(os, "memfd_create") or not os.path.isdir("/proc/self/fd"):
+        return None
+    descritores: list[int] = []
+    try:
+        for conteudo in conteudos:
+            descritor = os.memfd_create("freedfe-pem", os.MFD_CLOEXEC)
+            descritores.append(descritor)
+            os.fchmod(descritor, 0o600)  # o memfd nasce com 0777
+            escrito = 0
+            while escrito < len(conteudo):
+                escrito += os.write(descritor, conteudo[escrito:])
+        return descritores
+    except OSError:
+        for descritor in descritores:
+            with contextlib.suppress(OSError):
+                os.close(descritor)
+        return None
 
 
 def _gravar_privado(caminho: str, conteudo: bytes) -> None:

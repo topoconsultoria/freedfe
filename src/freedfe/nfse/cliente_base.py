@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-from freedfe.auditoria import RegistroAuditoria
+from freedfe.auditoria import Auditoria
 from freedfe.excecoes import ComunicacaoErro, RespostaInvalidaErro
 from freedfe.nfse.resposta import extrair_erros, ler_json
 from freedfe.servicos import ConfiguracaoNfse
@@ -27,7 +27,7 @@ class ClienteNfseBase:
     servico = "nfse"
 
     def __init__(self, configuracao: ConfiguracaoNfse, transporte: TransporteRest,
-                 auditoria: RegistroAuditoria,
+                 auditoria: Auditoria,
                  pausa: Callable[[float], None] = time.sleep,
                  esperas: tuple[float, ...] = ESPERAS_PADRAO):
         self._cfg = configuracao
